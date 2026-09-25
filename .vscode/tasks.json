@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // build and test inside podman, see Containerfile for the build environment
+      "label": "podman: build + test",
+      "type": "shell",
+      "args": ["${workspaceFolder}"],
+      "command": "${workspaceFolder}/.zed/podman-build-test.sh",
+      "cwd": "${workspaceFolder}",
+      "save": "all",
+      "useNewTerminal": false,
+      "parallel": false,
+      "problemMatcher": [],
+      "reveal": "always"
+    },
+    {
+      // run build made by podman
+      "label": "run app",
+      "command": "./target/podman/debug/gpuz_term",
+      "cwd": "${workspaceFolder}",
+      "save": "all",
+      "useNewTerminal": false,
+      "parallel": false,
+      "problemMatcher": [],
+      "reveal": "always"
+    }
+  ]
+}
