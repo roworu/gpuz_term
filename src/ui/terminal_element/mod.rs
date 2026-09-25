@@ -1,0 +1,223 @@
+//! custom gpui element that paints terminal grid
+
+mod cursor;
+mod grid;
+mod input_handler;
+
+use alacritty_terminal::vte::ansi::CursorShape;
+use gpui::{
+    App, Bounds, ContentMask, Element, ElementId, Entity, FocusHandle, Font, FontFeatures,
+    FontStyle, FontWeight, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels,
+    Style, TextRun, Window, fill, point, px, relative, rgb, size,
+};
+
+use crate::{
+    settings::Settings,
+    terminal::{Terminal, TerminalBounds},
+    theme,
+    ui::terminal_view::TerminalView,
+};
+use cursor::CursorLayout;
+use grid::{BatchedTextRun, LayoutRect, layout_grid};
+use input_handler::TerminalInputHandler;
+
+/// everything computed in prepaint that paint needs
+pub struct LayoutState {
+    rects: Vec<LayoutRect>,
+    batched_text_runs: Vec<BatchedTextRun>,
+    cursor: Option<CursorLayout>,
+    dimensions: TerminalBounds,
+    font_size: Pixels,
+}
+
+pub struct TerminalElement {
+    terminal: Entity<Terminal>,
+    terminal_view: Entity<TerminalView>,
+    focus: FocusHandle,
+    focused: bool,
+}
+
+impl TerminalElement {
+    /// create element that paints given terminal
+    pub fn new(
+        terminal: Entity<Terminal>,
+        terminal_view: Entity<TerminalView>,
+        focus: FocusHandle,
+        focused: bool,
+    ) -> Self {
+        Self {
+            terminal,
+            terminal_view,
+            focus,
+            focused,
+        }
+    }
+
+    fn text_font(family: &str) -> Font {
+        Font {
+            family: family.to_string().into(),
+            features: FontFeatures::disable_ligatures(),
+            fallbacks: None,
+            weight: FontWeight::NORMAL,
+            style: FontStyle::Normal,
+        }
+    }
+}
+
+impl Element for TerminalElement {
+    type RequestLayoutState = ();
+    type PrepaintState = LayoutState;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let mut style = Style::default();
+        style.size.width = relative(1.).into();
+        style.size.height = relative(1.).into();
+        (window.request_layout(style, None, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        let settings = &Settings::get(cx).terminal;
+        let font = Self::text_font(&settings.font_family);
+        let font_size = px(settings.font_size);
+        let line_height = (font_size * settings.line_height.value()).round();
+        let text_system = cx.text_system();
+        let font_id = text_system.resolve_font(&font);
+        let cell_width = text_system.advance(font_id, font_size, 'm').unwrap().width;
+
+        // zed leaves one cell of gutter on the left
+        let mut origin = bounds.origin;
+        origin.x += cell_width;
+        let mut grid_size = bounds.size;
+        grid_size.width = (grid_size.width - cell_width).max(cell_width * 2.);
+
+        // snap to device pixels so glyphs do not jitter while resizing
+        let scale_factor = window.scale_factor();
+        let snap = |v: Pixels| px((f32::from(v) * scale_factor).floor() / scale_factor);
+        origin = point(snap(origin.x), snap(origin.y));
+
+        let dimensions =
+            TerminalBounds::new(line_height, cell_width, Bounds::new(origin, grid_size));
+
+        self.terminal.update(cx, |terminal, _| {
+            terminal.set_size(dimensions);
+            terminal.sync();
+        });
+
+        let content = &self.terminal.read(cx).last_content;
+        let (rects, batched_text_runs) =
+            layout_grid(&content.cells, content.display_offset, &font);
+
+        let cursor_line = content.cursor.point.line.0 + content.display_offset as i32;
+        let cursor = (content.cursor.shape != CursorShape::Hidden
+            && cursor_line >= 0
+            && (cursor_line as usize) < dimensions.num_lines())
+        .then(|| {
+            let text = content.cursor_char.to_string();
+            let len = text.len();
+            let text = window.text_system().shape_line(
+                text.into(),
+                font_size,
+                &[TextRun {
+                    len,
+                    font: font.clone(),
+                    color: rgb(theme::TERMINAL_BACKGROUND).into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            );
+            // wide glyphs like emoji need a wider block
+            let width = if content.cursor_char.is_whitespace() {
+                cell_width
+            } else {
+                text.width.max(cell_width)
+            };
+            CursorLayout {
+                bounds: Bounds::new(
+                    point(
+                        (content.cursor.point.column.0 as f32 * cell_width).floor(),
+                        (cursor_line as f32 * line_height).floor(),
+                    ),
+                    size(width.ceil(), line_height),
+                ),
+                shape: content.cursor.shape,
+                focused: self.focused,
+                text,
+            }
+        });
+
+        LayoutState {
+            rects,
+            batched_text_runs,
+            cursor,
+            dimensions,
+            font_size,
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        layout: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            window.paint_quad(fill(bounds, rgb(theme::TERMINAL_BACKGROUND)));
+
+            let origin = layout.dimensions.bounds.origin;
+            window.handle_input(
+                &self.focus,
+                TerminalInputHandler {
+                    terminal_view: self.terminal_view.clone(),
+                    cursor_bounds: layout.cursor.as_ref().map(|c| c.bounds + origin),
+                },
+                cx,
+            );
+
+            for rect in &layout.rects {
+                rect.paint(origin, &layout.dimensions, window);
+            }
+            for run in &layout.batched_text_runs {
+                run.paint(origin, &layout.dimensions, layout.font_size, window, cx);
+            }
+            if let Some(cursor) = &layout.cursor {
+                cursor.paint(origin, window, cx);
+            }
+        });
+    }
+}
+
+impl IntoElement for TerminalElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
