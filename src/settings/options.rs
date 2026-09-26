@@ -32,6 +32,16 @@ impl LineHeight {
     }
 }
 
+/// which theme to use
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeMode {
+    /// follow system dark/light preference
+    System,
+    Dark,
+    Light,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum CursorShape {

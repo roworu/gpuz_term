@@ -39,7 +39,7 @@ fn main() {
     application().run(|cx: &mut App| {
         load_fonts(cx);
         cx.set_global(Settings::load());
-        cx.set_global(Theme::load());
+        Theme::apply(cx.window_appearance(), cx);
         cx.bind_keys([
             // TODO: need expose to settings here
             KeyBinding::new("ctrl-t", NewTab, None),

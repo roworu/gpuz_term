@@ -10,6 +10,20 @@
   // ui font size in pixels, the whole ui scales with it
   "ui_font_size": 16,
 
+  "theme": {
+    // which theme to use, applied right away when the system switches:
+    //   "system" - follow system dark/light preference
+    //   "dark"   - always dark
+    //   "light"  - always light
+    "mode": "system",
+    // path to a custom theme json for each mode, null uses the bundled one.
+    // relative paths are resolved from this folder, e.g. "themes/my_dark.json".
+    // the bundled themes show all colors that can be set, missing colors
+    // fall back to the bundled theme of the same mode.
+    "dark": null,
+    "light": null,
+  },
+
   "terminal": {
     // shell to launch in new tabs:
     //   "system"                                                   - login shell of current user

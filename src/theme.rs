@@ -1,11 +1,11 @@
-//! theme colors, read from a json file, default is one dark
+//! theme colors, dark or light from bundled or custom json files
 
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
-use gpui::{App, Global, Hsla, rgb};
+use gpui::{App, Global, Hsla, WindowAppearance, rgb};
 use serde::Deserialize;
 use serde_json_lenient::Value;
 
-use crate::settings::{Settings, create_default_file, merge};
+use crate::settings::{Settings, ThemeMode, ThemeSettings, merge};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Theme {
@@ -26,44 +26,70 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        serde_json_lenient::from_str(DEFAULT_THEME).expect("bundled default theme is invalid")
+        Self::bundled(true)
     }
 }
 
 impl Global for Theme {}
 
-/// commented theme file written on first launch
-pub const DEFAULT_THEME: &str = include_str!("../assets/default_theme.json");
+/// bundled theme for dark mode
+pub const DEFAULT_DARK_THEME: &str = include_str!("../assets/default_theme_dark.json");
+/// bundled theme for light mode
+pub const DEFAULT_LIGHT_THEME: &str = include_str!("../assets/default_theme_light.json");
 
 impl Theme {
-    /// theme.json next to settings.json
-    pub fn path() -> Option<std::path::PathBuf> {
-        Some(Settings::path()?.with_file_name("theme.json"))
+    fn bundled_json(dark: bool) -> &'static str {
+        if dark { DEFAULT_DARK_THEME } else { DEFAULT_LIGHT_THEME }
     }
 
-    /// parse theme, we allow comments and trailing commas
-    pub fn parse(json: &str) -> serde_json_lenient::Result<Self> {
-        let mut theme: Value = serde_json_lenient::from_str(DEFAULT_THEME)?;
+    /// bundled dark or light theme
+    pub fn bundled(dark: bool) -> Self {
+        serde_json_lenient::from_str(Self::bundled_json(dark)).expect("bundled theme is invalid")
+    }
+
+    /// parse theme, missing colors come from the bundled theme of the same mode
+    pub fn parse(json: &str, dark: bool) -> serde_json_lenient::Result<Self> {
+        let mut theme: Value = serde_json_lenient::from_str(Self::bundled_json(dark))?;
         merge(&mut theme, serde_json_lenient::from_str(json)?);
         serde_json_lenient::from_value(theme)
     }
 
-    /// load theme from the theme file, using defaults when it is missing or invalid
-    pub fn load() -> Self {
-        let Some(path) = Self::path() else {
-            return Self::default();
+    /// load dark or light theme set in settings, using the bundled one when not set or invalid
+    pub fn load(settings: &ThemeSettings, dark: bool) -> Self {
+        let custom = if dark { &settings.dark } else { &settings.light };
+        let Some(path) = custom else {
+            return Self::bundled(dark);
         };
-        create_default_file(&path, DEFAULT_THEME);
-        let Ok(json) = std::fs::read_to_string(&path) else {
-            return Self::default();
-        };
-        Self::parse(&json).unwrap_or_else(|error| {
-            eprintln!("invalid theme in {}: {error}", path.display());
-            Self::default()
-        })
+        // relative paths start from the folder with settings.json
+        let path = Settings::path()
+            .and_then(|settings| settings.parent().map(|dir| dir.join(path)))
+            .unwrap_or_else(|| path.clone());
+        match std::fs::read_to_string(&path) {
+            Ok(json) => Self::parse(&json, dark).unwrap_or_else(|error| {
+                eprintln!("invalid theme in {}: {error}", path.display());
+                Self::bundled(dark)
+            }),
+            Err(error) => {
+                eprintln!("failed to read theme {}: {error}", path.display());
+                Self::bundled(dark)
+            }
+        }
     }
 
-    /// theme loaded at startup
+    /// set active theme from settings mode and system appearance
+    pub fn apply(appearance: WindowAppearance, cx: &mut App) {
+        let settings = &Settings::get(cx).theme;
+        let dark = match settings.mode {
+            ThemeMode::System => {
+                matches!(appearance, WindowAppearance::Dark | WindowAppearance::VibrantDark)
+            }
+            ThemeMode::Dark => true,
+            ThemeMode::Light => false,
+        };
+        cx.set_global(Self::load(settings, dark));
+    }
+
+    /// active theme
     pub fn get(cx: &App) -> &Self {
         cx.global::<Self>()
     }

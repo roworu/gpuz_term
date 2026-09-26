@@ -7,6 +7,7 @@ use gpui::{Context, Entity, Focusable, Subscription, Window, actions, prelude::*
 use crate::{
     settings::Settings,
     terminal::{Event, TerminalBuilder},
+    theme::Theme,
     ui::terminal_view::TerminalView,
 };
 
@@ -29,6 +30,12 @@ impl Workspace {
             tabs: Vec::new(),
             active: 0,
         };
+        cx.observe_window_appearance(window, |_, window, cx| {
+            Theme::apply(window.appearance(), cx);
+            // terminal views may be cached, force redraw everything with new colors
+            window.refresh();
+        })
+        .detach();
         this.add_tab(window, cx);
         this
     }

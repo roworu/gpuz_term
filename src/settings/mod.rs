@@ -10,12 +10,13 @@ use gpui::{App, Global};
 use serde::Deserialize;
 use serde_json_lenient::Value;
 
-pub use options::{CursorShape, LineHeight, Shell};
+pub use options::{CursorShape, LineHeight, Shell, ThemeMode};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Settings {
     pub ui_font_family: String,
     pub ui_font_size: f32,
+    pub theme: ThemeSettings,
     pub terminal: TerminalSettings,
 }
 
@@ -23,6 +24,15 @@ impl Default for Settings {
     fn default() -> Self {
         serde_json_lenient::from_str(DEFAULT_SETTINGS).expect("bundled default settings are invalid")
     }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct ThemeSettings {
+    pub mode: ThemeMode,
+    /// custom dark theme file, bundled one when none
+    pub dark: Option<PathBuf>,
+    /// custom light theme file, bundled one when none
+    pub light: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]

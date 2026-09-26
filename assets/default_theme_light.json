@@ -1,0 +1,33 @@
+// gpuz_term light theme, one half light
+//
+// bundled default for light mode. to customize, copy this file anywhere
+// and set its path in settings.json under "theme" -> "light".
+// colors are hex strings: "#rgb", "#rgba", "#rrggbb" or "#rrggbbaa".
+// comments and trailing commas are allowed, missing values use colors from this file.
+// if a custom theme is invalid, this bundled theme is used and an error is printed.
+{
+  // tab bar
+  "tab_bar_background": "#ebebec",
+  "tab_active_background": "#fafafa",
+  "border": "#c9c9ca",
+  "text": "#383a42",
+  "text_muted": "#6a6b70",
+
+  // terminal
+  "terminal_background": "#fafafa",
+  "terminal_foreground": "#383a42",
+  "cursor": "#526fff",
+  "bright_foreground": "#202227",
+  "dim_foreground": "#a0a1a7",
+
+  // 16 ansi colors, must have exactly 16 entries
+  "ansi": [
+    // normal: black, red, green, yellow, blue, magenta, cyan, white
+    "#383a42", "#e45649", "#50a14f", "#c18401", "#0184bc", "#a626a4", "#0997b3", "#a0a1a7",
+    // bright: black, red, green, yellow, blue, magenta, cyan, white
+    "#4f525e", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#ffffff",
+  ],
+  // dim ansi colors, must have exactly 8 entries
+  // black, red, green, yellow, blue, magenta, cyan, white
+  "ansi_dim": ["#727479", "#eb877e", "#83bc82", "#d2a74c", "#4ca7cf", "#bf66be", "#51b5c8", "#b8b9bd"],
+}
