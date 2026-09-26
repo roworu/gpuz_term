@@ -1,5 +1,7 @@
 //! theme colors, dark or light from bundled or custom jsonc files
 
+use std::path::{Path, PathBuf};
+
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
 use gpui::{App, Global, Hsla, WindowAppearance, rgb};
 use serde::Deserialize;
@@ -54,18 +56,27 @@ impl Theme {
         serde_json_lenient::from_value(theme)
     }
 
+    // relative paths start from the folder with settings.jsonc
+    fn resolve(path: &Path) -> PathBuf {
+        Settings::path()
+            .and_then(|settings| settings.parent().map(|dir| dir.join(path)))
+            .unwrap_or_else(|| path.to_path_buf())
+    }
+
     /// load dark or light theme set in settings, using the bundled one when not set or invalid
     pub fn load(settings: &ThemeSettings, dark: bool) -> Self {
+        // create both theme files up front, so the unused mode is ready to edit too
+        for (path, is_dark) in [(&settings.dark, true), (&settings.light, false)] {
+            if let Some(path) = path {
+                create_default_file(&Self::resolve(path), Self::bundled_json(is_dark));
+            }
+        }
+
         let custom = if dark { &settings.dark } else { &settings.light };
         let Some(path) = custom else {
             return Self::bundled(dark);
         };
-        // relative paths start from the folder with settings.jsonc
-        let path = Settings::path()
-            .and_then(|settings| settings.parent().map(|dir| dir.join(path)))
-            .unwrap_or_else(|| path.clone());
-        // a missing theme file starts as a copy of the bundled one, ready to edit
-        create_default_file(&path, Self::bundled_json(dark));
+        let path = Self::resolve(path);
         match std::fs::read_to_string(&path) {
             Ok(json) => Self::parse(&json, dark).unwrap_or_else(|error| {
                 eprintln!("invalid theme in {}: {error}", path.display());
