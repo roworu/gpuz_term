@@ -19,6 +19,8 @@ pub struct Settings {
     pub tab_width: u32,
     pub tab_title: Vec<TabTitleBlock>,
     pub tab_title_align: TabTitleAlign,
+    pub window_title: Vec<TabTitleBlock>,
+    pub default_title: String,
     pub theme: ThemeSettings,
     pub terminal: TerminalSettings,
 }

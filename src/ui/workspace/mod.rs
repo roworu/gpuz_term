@@ -40,6 +40,8 @@ pub struct Workspace {
     active: usize,
     /// tab row scroll state, also records where each tab was laid out
     tab_scroll: ScrollHandle,
+    /// built from `window_title` blocks for the active tab
+    window_title: String,
     refresh_titles: UnboundedSender<()>,
     _title_task: Task<()>,
 }
@@ -48,22 +50,31 @@ impl Workspace {
     /// create workspace with one terminal tab
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (refresh_titles, mut refresh_rx) = unbounded();
-        let title_task = cx.spawn(async move |this, cx| {
+        let title_task = cx.spawn_in(window, async move |this, cx| {
             loop {
-                let Ok((blocks, inputs)) = this.update(cx, |this, cx| this.title_inputs(cx)) else {
+                let Ok((blocks, window_blocks, active, inputs)) =
+                    this.update(cx, |this, cx| this.title_inputs(cx))
+                else {
                     break;
                 };
                 // /proc reads and exec blocks may block, keep them off the main thread
-                let titles = cx
+                let (titles, window_title) = cx
                     .background_executor()
                     .spawn(async move {
-                        inputs
+                        let window_title = inputs
+                            .get(active)
+                            .map(|(_, inputs)| tab_title::build_title(&window_blocks, inputs))
+                            .unwrap_or_default();
+                        let titles = inputs
                             .into_iter()
                             .map(|(id, inputs)| (id, tab_title::build_title(&blocks, &inputs)))
-                            .collect::<Vec<_>>()
+                            .collect::<Vec<_>>();
+                        (titles, window_title)
                     })
                     .await;
-                let Ok(()) = this.update(cx, |this, cx| this.set_titles(titles, cx)) else {
+                let Ok(()) = this.update_in(cx, |this, window, cx| {
+                    this.set_titles(titles, window_title, window, cx)
+                }) else {
                     break;
                 };
                 let mut timer = cx.background_executor().timer(TITLE_REFRESH_INTERVAL).fuse();
@@ -79,6 +90,7 @@ impl Workspace {
             tabs: Vec::new(),
             active: 0,
             tab_scroll: ScrollHandle::new(),
+            window_title: String::new(),
             refresh_titles,
             _title_task: title_task,
         };
@@ -130,6 +142,8 @@ impl Workspace {
 
     fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.active = ix;
+        // window title follows the active tab
+        self.refresh_titles();
         self.tab_scroll.scroll_to_item(ix);
         self.tabs[ix].view.focus_handle(cx).focus(window, cx);
         cx.notify();
@@ -157,7 +171,11 @@ impl Workspace {
         self.refresh_titles.unbounded_send(()).ok();
     }
 
-    fn title_inputs(&self, cx: &App) -> (Vec<TabTitleBlock>, Vec<(EntityId, TitleInputs)>) {
+    fn title_inputs(
+        &self,
+        cx: &App,
+    ) -> (Vec<TabTitleBlock>, Vec<TabTitleBlock>, usize, Vec<(EntityId, TitleInputs)>) {
+        let settings = Settings::get(cx);
         let inputs = self
             .tabs
             .iter()
@@ -167,15 +185,31 @@ impl Workspace {
                 let inputs = TitleInputs {
                     number: ix + 1,
                     shell_pid: terminal.shell_pid,
-                    title: terminal.title(),
+                    title: terminal.title(&settings.default_title),
                 };
                 (tab.view.entity_id(), inputs)
             })
             .collect();
-        (Settings::get(cx).tab_title.clone(), inputs)
+        (settings.tab_title.clone(), settings.window_title.clone(), self.active, inputs)
     }
 
-    fn set_titles(&mut self, titles: Vec<(EntityId, String)>, cx: &mut Context<Self>) {
+    fn set_titles(
+        &mut self,
+        titles: Vec<(EntityId, String)>,
+        window_title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let window_title = if window_title.is_empty() {
+            Settings::get(cx).default_title.clone()
+        } else {
+            window_title
+        };
+        // linux can't read the title back, so the last one is kept here
+        if self.window_title != window_title {
+            window.set_window_title(&window_title);
+            self.window_title = window_title;
+        }
         let mut changed = false;
         for (id, title) in titles {
             // tabs closed while building are skipped

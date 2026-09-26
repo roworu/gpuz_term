@@ -68,7 +68,7 @@ impl Workspace {
         let tab_state = &self.tabs[ix];
         // the program title stands in until the first refresh, or when the blocks are empty
         let title = if tab_state.title.is_empty() {
-            tab_state.view.read(cx).terminal().read(cx).title()
+            tab_state.view.read(cx).terminal().read(cx).title(&Settings::get(cx).default_title)
         } else {
             tab_state.title.clone()
         };

@@ -53,7 +53,7 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("gpuz_term".into()),
+                    title: Some(Settings::get(cx).default_title.clone().into()),
                     ..Default::default()
                 }),
                 app_id: Some("gpuz_term".into()),

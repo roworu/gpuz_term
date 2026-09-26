@@ -54,11 +54,10 @@ pub struct Terminal {
 
 impl EventEmitter<Event> for Terminal {}
 impl Terminal {
-    /// title set by the running program, falls back to "Terminal"
-    /// TODO: need settings for that..
-    pub fn title(&self) -> String {
+    /// title set by the running program, falls back to `default_title`
+    pub fn title(&self, default_title: &str) -> String {
         if self.title.is_empty() {
-            "Terminal".to_string()
+            default_title.to_string()
         } else {
             self.title.clone()
         }
