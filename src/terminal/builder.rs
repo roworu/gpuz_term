@@ -82,6 +82,7 @@ impl TerminalBuilder {
 
         let pty = tty::new(&pty_options, TerminalBounds::default().into(), window_id)
             .context("failed to open pty")?;
+        let shell_pid = pty.child().id();
 
         let event_loop = EventLoop::new(
             term.clone(),
@@ -100,6 +101,7 @@ impl TerminalBuilder {
             events: Vec::new(),
             last_content: Content::default(),
             title: String::new(),
+            shell_pid,
             _event_loop_task: Task::ready(()),
         };
 

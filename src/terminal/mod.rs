@@ -5,6 +5,7 @@ mod builder;
 mod content;
 mod events;
 mod keys;
+mod process;
 
 use std::{borrow::Cow, sync::Arc};
 
@@ -21,6 +22,7 @@ use gpui::{EventEmitter, Keystroke, Task};
 pub use bounds::TerminalBounds;
 pub use builder::TerminalBuilder;
 pub use content::{Content, IndexedCell};
+pub use process::foreground_process;
 
 use builder::ZedListener;
 use content::make_content;
@@ -45,6 +47,8 @@ pub struct Terminal {
     events: Vec<InternalEvent>,
     pub last_content: Content,
     title: String,
+    /// pid of the shell running in the pty
+    pub shell_pid: u32,
     _event_loop_task: Task<()>,
 }
 
@@ -148,7 +152,7 @@ mod tests {
     use futures::{FutureExt, StreamExt};
     use gpui::{Bounds, px, size};
 
-    use super::{Terminal, TerminalBounds, TerminalBuilder};
+    use super::{Terminal, TerminalBounds, TerminalBuilder, foreground_process, process::ForegroundProcess};
     use crate::settings::{CursorShape, Shell, TerminalSettings};
 
     fn spawn(settings: &TerminalSettings) -> TerminalBuilder {
@@ -248,6 +252,24 @@ mod tests {
                 }
             }
             assert!(Instant::now() < deadline, "no exit event after `exit`");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn foreground_process_follows_shell() {
+        let mut builder = spawn(&TerminalSettings::default());
+        builder.terminal.input(b"cd /tmp && sleep 5\r".to_vec());
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let process = foreground_process(builder.terminal.shell_pid);
+            if let Some(ForegroundProcess { name, cwd }) = &process
+                && name == "sleep"
+            {
+                assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+                return;
+            }
+            assert!(Instant::now() < deadline, "sleep is not in foreground: {process:?}");
             std::thread::sleep(Duration::from_millis(50));
         }
     }

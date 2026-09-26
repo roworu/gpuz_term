@@ -61,3 +61,30 @@ impl From<CursorShape> for AlacCursorShape {
         }
     }
 }
+
+/// one piece of the tab title
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TabTitleBlock {
+    /// tab position, starting at 1
+    Number,
+    /// user@host
+    Prompt,
+    Folder,
+    /// name of the running program
+    Command,
+    /// title set by the running program
+    Title,
+    Text(String),
+    /// first line of a shell command's output, run in the current folder
+    Exec(String),
+}
+
+/// where the title sits inside its tab
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TabTitleAlign {
+    Left,
+    Center,
+    Right,
+}

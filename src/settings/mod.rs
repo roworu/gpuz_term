@@ -8,13 +8,17 @@ use gpui::{App, Global};
 use serde::Deserialize;
 use serde_json_lenient::Value;
 
-pub use options::{CursorShape, LineHeight, Shell, ThemeMode};
+pub use options::{CursorShape, LineHeight, Shell, TabTitleAlign, TabTitleBlock, ThemeMode};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Settings {
     pub ui_font_family: String,
     pub ui_font_size: f32,
     pub hide_bar_for_one_tab: bool,
+    pub expand_tabs: bool,
+    pub tab_width: u32,
+    pub tab_title: Vec<TabTitleBlock>,
+    pub tab_title_align: TabTitleAlign,
     pub theme: ThemeSettings,
     pub terminal: TerminalSettings,
 }
@@ -163,7 +167,7 @@ pub(crate) mod tests {
         assert_eq!(settings.terminal.font_family, "JetBrainsMonoNL Nerd Font Mono");
         assert_eq!(settings.terminal.shell, Shell::System);
         assert_eq!(settings.terminal.line_height.value(), 1.3);
-        assert_eq!(settings.terminal.cursor_shape, CursorShape::Block);
+        assert_eq!(settings.terminal.cursor_shape, CursorShape::Bar);
     }
 
     #[test]
@@ -241,6 +245,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn parses_tab_title_blocks() {
+        let settings = Settings::parse(
+            r#"{"tab_title": ["number", {"text": ": "}, "prompt", "folder", "command", "title", {"exec": "date"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            settings.tab_title,
+            vec![
+                TabTitleBlock::Number,
+                TabTitleBlock::Text(": ".into()),
+                TabTitleBlock::Prompt,
+                TabTitleBlock::Folder,
+                TabTitleBlock::Command,
+                TabTitleBlock::Title,
+                TabTitleBlock::Exec("date".into()),
+            ]
+        );
+        assert!(Settings::parse(r#"{"tab_title": ["unknown"]}"#).is_err());
+        assert_eq!(Settings::default().tab_title_align, TabTitleAlign::Left);
+        let align = |json: &str| Settings::parse(json).unwrap().tab_title_align;
+        assert_eq!(align(r#"{"tab_title_align": "center"}"#), TabTitleAlign::Center);
+        assert_eq!(align(r#"{"tab_title_align": "right"}"#), TabTitleAlign::Right);
+        assert!(Settings::parse(r#"{"tab_title_align": "middle"}"#).is_err());
+        assert!(Settings::parse(r#"{"tab_title": "number"}"#).is_err());
+    }
+
+    #[test]
     fn theme_paths_keep_other_defaults() {
         let settings = Settings::parse(r#"{"theme": {"dark": "themes/d.jsonc"}}"#).unwrap();
         assert_eq!(settings.theme.mode, ThemeMode::System);
@@ -266,6 +297,8 @@ pub(crate) mod tests {
             "5",
             "null",
             r#"{"terminal": 5}"#,
+            r#"{"tab_width": -1}"#,
+            r#"{"tab_width": 60.5}"#,
             r#"{"ui_font_size": "big"}"#,
             r#"{"terminal": {"cursor_shape": "triangle"}}"#,
             r#"{"terminal": {"line_height": "tall"}}"#,

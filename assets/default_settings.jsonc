@@ -10,7 +10,25 @@
   // ui font size in pixels, the whole ui scales with it
   "ui_font_size": 16,
   // hide the tab bar while only one tab is open, ctrl-t still opens new tabs
-  "hide_bar_for_one_tab": false,
+  "hide_bar_for_one_tab": true,
+  // stretch tabs to fill the whole tab bar, sharing its width equally
+  "expand_tabs": false,
+  // tab width in pixels when "expand_tabs" is false, wheel scrolls tabs that don't fit
+  "tab_width": 180,
+  // tab title, built from these blocks in order:
+  //   "number"                                 - tab position, starting at 1
+  //   "prompt"                                 - user@host
+  //   "folder"                                 - name of the current folder
+  //   "command"                                - name of the running program
+  //   "title"                                  - title set by the running program
+  //   { "text": " < AMONGUS > " }              - any text
+  //   { "exec": "git branch --show-current" }  - first line of a command's output, run in the current folder
+  // titles refresh every second
+  // example:
+  //   ["number", { "text": ": " }, "folder", { "text": " > " }, "command"]
+  "tab_title": ["folder", { "text": " - " }, "command"],
+  // where the title sits inside its tab: "left", "center" or "right"
+  "tab_title_align": "left",
 
   "theme": {
     // which theme to use, applied right away when the system switches:
@@ -42,6 +60,6 @@
     //   { "custom": 1.5 }   - any value
     "line_height": "standard",
     // cursor shape: "block", "bar", "underline" or "hollow"
-    "cursor_shape": "block",
+    "cursor_shape": "bar",
   },
 }
