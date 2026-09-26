@@ -113,6 +113,8 @@ impl Render for Workspace {
             .key_context("Workspace")
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::close_tab))
+            .on_action(cx.listener(Self::next_tab))
+            .on_action(cx.listener(Self::activate_tab_action))
             .size_full()
             .flex()
             .flex_col()

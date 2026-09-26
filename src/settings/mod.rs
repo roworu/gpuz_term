@@ -1,5 +1,6 @@
 //! user settings, read from a jsonc file
 
+mod keybindings;
 mod options;
 
 use std::path::{Path, PathBuf};
@@ -8,6 +9,7 @@ use gpui::{App, Global};
 use serde::Deserialize;
 use serde_json_lenient::Value;
 
+pub use keybindings::Keybindings;
 pub use options::{CursorShape, LineHeight, Shell, TabTitleAlign, TabTitleBlock, ThemeMode};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]

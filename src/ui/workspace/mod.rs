@@ -10,7 +10,7 @@ use futures::{
     channel::mpsc::{UnboundedSender, unbounded},
 };
 use gpui::{
-    App, Context, Entity, EntityId, Focusable, ScrollHandle, Subscription, Task, Window, actions,
+    Action, App, Context, Entity, EntityId, Focusable, ScrollHandle, Subscription, Task, Window, actions,
     prelude::*,
 };
 
@@ -23,7 +23,12 @@ use crate::{
     ui::terminal_view::TerminalView,
 };
 
-actions!(workspace, [NewTab, CloseTab]);
+actions!(workspace, [NewTab, CloseTab, NextTab]);
+
+/// activate tab at this 0 based index
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct ActivateTab(pub usize);
 
 // programs, folders and command output change without events, so titles are polled
 const TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -231,5 +236,16 @@ impl Workspace {
 
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         self.close_tab_at(self.active, window, cx);
+    }
+
+    fn next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
+        // wraps from the last tab back to the first
+        self.activate_tab((self.active + 1) % self.tabs.len(), window, cx);
+    }
+
+    fn activate_tab_action(&mut self, action: &ActivateTab, window: &mut Window, cx: &mut Context<Self>) {
+        if action.0 < self.tabs.len() {
+            self.activate_tab(action.0, window, cx);
+        }
     }
 }

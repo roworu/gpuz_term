@@ -1,0 +1,146 @@
+//! user keybindings, read from a jsonc file next to settings
+
+use std::{collections::BTreeMap, path::PathBuf};
+
+use gpui::{KeyBinding, Keystroke};
+use serde::de::Error;
+use serde_json_lenient::Value;
+
+use super::{Settings, create_default_file, merge};
+use crate::ui::{
+    terminal_view::Paste,
+    workspace::{ActivateTab, CloseTab, NewTab, NextTab},
+};
+
+/// action name to its keys, `None` when the action is disabled
+#[derive(Clone, Debug, PartialEq)]
+pub struct Keybindings(BTreeMap<String, Option<String>>);
+
+impl Default for Keybindings {
+    fn default() -> Self {
+        Self::parse("{}").expect("bundled default keybindings are invalid")
+    }
+}
+
+/// commented keybindings file written on first launch
+pub const DEFAULT_KEYBINDINGS: &str = include_str!("../../assets/default_keybindings.jsonc");
+
+// keys are checked before this runs, so `KeyBinding::new` won't panic
+fn binding(action: &str, keys: &str) -> Option<KeyBinding> {
+    Some(match action {
+        "new_tab" => KeyBinding::new(keys, NewTab, None),
+        "close_tab" => KeyBinding::new(keys, CloseTab, None),
+        "next_tab" => KeyBinding::new(keys, NextTab, None),
+        "paste" => KeyBinding::new(keys, Paste, Some("Terminal")),
+        _ => {
+            let number: usize = action.strip_prefix("activate_tab_")?.parse().ok()?;
+            KeyBinding::new(keys, ActivateTab(number.checked_sub(1)?), None)
+        }
+    })
+}
+
+impl Keybindings {
+    /// `keybindings.jsonc` in the same folder as `settings.jsonc`
+    pub fn path() -> Option<PathBuf> {
+        Some(Settings::path()?.with_file_name("keybindings.jsonc"))
+    }
+
+    /// parse keybindings over the bundled ones, rejecting unknown actions and bad keys
+    pub fn parse(json: &str) -> serde_json_lenient::Result<Self> {
+        let mut bindings: Value = serde_json_lenient::from_str(DEFAULT_KEYBINDINGS)?;
+        merge(&mut bindings, serde_json_lenient::from_str(json)?);
+        let bindings: BTreeMap<String, Option<String>> = serde_json_lenient::from_value(bindings)?;
+        for (action, keys) in &bindings {
+            let Some(keys) = keys else { continue };
+            if keys.trim().is_empty() {
+                return Err(Error::custom(format!("empty keys for {action:?}, use null to disable it")));
+            }
+            for key in keys.split_whitespace() {
+                Keystroke::parse(key).map_err(|error| Error::custom(format!("{action:?}: {error}")))?;
+            }
+            if binding(action, keys).is_none() {
+                return Err(Error::custom(format!("unknown action {action:?}")));
+            }
+        }
+        Ok(Self(bindings))
+    }
+
+    /// load keybindings from the keybindings file, using defaults when it is missing or invalid
+    pub fn load() -> Self {
+        let Some(path) = Self::path() else {
+            return Self::default();
+        };
+        create_default_file(&path, DEFAULT_KEYBINDINGS);
+        let Ok(json) = std::fs::read_to_string(&path) else {
+            return Self::default();
+        };
+        Self::parse(&json).unwrap_or_else(|error| {
+            eprintln!("invalid keybindings in {}: {error}", path.display());
+            Self::default()
+        })
+    }
+
+    /// gpui bindings for every enabled action
+    pub fn bindings(&self) -> Vec<KeyBinding> {
+        self.0
+            .iter()
+            .filter_map(|(action, keys)| binding(action, keys.as_deref()?))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::tests::{temp_dir, with_config_home};
+
+    #[test]
+    fn defaults_bind_every_action() {
+        let keys = Keybindings::default();
+        assert_eq!(keys.0["new_tab"].as_deref(), Some("ctrl-t"));
+        assert_eq!(keys.0["next_tab"].as_deref(), Some("ctrl-tab"));
+        assert_eq!(keys.0["activate_tab_9"].as_deref(), Some("alt-9"));
+        assert_eq!(keys.bindings().len(), 13);
+    }
+
+    #[test]
+    fn partial_file_merges_and_null_disables() {
+        let keys = Keybindings::parse(r#"{"new_tab": "ctrl-shift-t", "close_tab": null, "activate_tab_10": "alt-0",}"#).unwrap();
+        assert_eq!(keys.0["new_tab"].as_deref(), Some("ctrl-shift-t"));
+        assert_eq!(keys.0["close_tab"], None);
+        assert_eq!(keys.0["paste"].as_deref(), Some("ctrl-shift-v"));
+        assert_eq!(keys.bindings().len(), 13);
+    }
+
+    #[test]
+    fn invalid_entries_are_rejected() {
+        for json in [
+            r#"{"open_window": "ctrl-n"}"#,
+            r#"{"new_tab": "  "}"#,
+            r#"{"new_tab": "foo-t"}"#,
+            r#"{"activate_tab_0": "alt-0"}"#,
+            r#"{"new_tab": 5}"#,
+        ] {
+            assert!(Keybindings::parse(json).is_err(), "{json} should be invalid");
+        }
+    }
+
+    #[test]
+    fn load_creates_keeps_and_falls_back() {
+        let dir = temp_dir("keybindings_load");
+        with_config_home(&dir, || {
+            let path = Keybindings::path().unwrap();
+            assert_eq!(path, dir.join("gpuz_term/keybindings.jsonc"));
+            assert_eq!(Keybindings::load(), Keybindings::default());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), DEFAULT_KEYBINDINGS);
+
+            std::fs::write(&path, r#"{"paste": null}"#).unwrap();
+            assert_eq!(Keybindings::load().0["paste"], None);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"{"paste": null}"#);
+
+            std::fs::write(&path, r#"{"bogus": "ctrl-b"}"#).unwrap();
+            assert_eq!(Keybindings::load(), Keybindings::default());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

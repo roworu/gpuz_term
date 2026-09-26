@@ -6,17 +6,14 @@ mod ui;
 use std::borrow::Cow;
 
 use gpui::{
-    App, AppContext, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, px, size,
+    App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size,
 };
 use gpui_platform::application;
 
 use crate::{
-    settings::Settings,
+    settings::{Keybindings, Settings},
     theme::Theme,
-    ui::{
-        terminal_view::Paste,
-        workspace::{CloseTab, NewTab, Workspace},
-    },
+    ui::workspace::Workspace,
 };
 
 fn load_fonts(cx: &App) {
@@ -40,12 +37,7 @@ fn main() {
         load_fonts(cx);
         cx.set_global(Settings::load());
         Theme::apply(cx.window_appearance(), cx);
-        cx.bind_keys([
-            // TODO: need expose to settings here
-            KeyBinding::new("ctrl-t", NewTab, None),
-            KeyBinding::new("ctrl-w", CloseTab, None),
-            KeyBinding::new("ctrl-shift-v", Paste, Some("Terminal")),
-        ]);
+        cx.bind_keys(Keybindings::load().bindings());
         cx.on_window_closed(|cx, _| cx.quit()).detach();
 
         let bounds = Bounds::centered(None, size(px(900.), px(600.)), cx);
