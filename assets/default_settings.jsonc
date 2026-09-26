@@ -18,12 +18,12 @@
     //   "dark"   - always dark
     //   "light"  - always light
     "mode": "system",
-    // path to a custom theme json for each mode, null uses the bundled one.
-    // relative paths are resolved from this folder, e.g. "themes/my_dark.json".
-    // the bundled themes show all colors that can be set, missing colors
-    // fall back to the bundled theme of the same mode.
-    "dark": null,
-    "light": null,
+    // theme file for each mode, null uses the bundled one without a file.
+    // relative paths are resolved from this folder.
+    // a missing file is created as a copy of the bundled theme, ready to edit.
+    // missing colors fall back to the bundled theme of the same mode.
+    "dark": "themes/dark.jsonc",
+    "light": "themes/light.jsonc",
   },
 
   "terminal": {

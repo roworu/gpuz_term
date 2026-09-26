@@ -1,10 +1,10 @@
 // gpuz_term dark theme, one dark
 //
-// bundled default for dark mode. to customize, copy this file anywhere
-// and set its path in settings.json under "theme" -> "dark".
+// created with default values on first launch, edit it to change colors.
+// its path is set in settings.jsonc under "theme" -> "dark".
 // colors are hex strings: "#rgb", "#rgba", "#rrggbb" or "#rrggbbaa".
 // comments and trailing commas are allowed, missing values use colors from this file.
-// if a custom theme is invalid, this bundled theme is used and an error is printed.
+// if this file is invalid, the bundled theme is used and an error is printed.
 {
   // tab bar
   "tab_bar_background": "#2f343e",

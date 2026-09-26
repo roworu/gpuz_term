@@ -1,11 +1,11 @@
-//! theme colors, dark or light from bundled or custom json files
+//! theme colors, dark or light from bundled or custom jsonc files
 
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
 use gpui::{App, Global, Hsla, WindowAppearance, rgb};
 use serde::Deserialize;
 use serde_json_lenient::Value;
 
-use crate::settings::{Settings, ThemeMode, ThemeSettings, merge};
+use crate::settings::{Settings, ThemeMode, ThemeSettings, merge, create_default_file};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Theme {
@@ -33,9 +33,9 @@ impl Default for Theme {
 impl Global for Theme {}
 
 /// bundled theme for dark mode
-pub const DEFAULT_DARK_THEME: &str = include_str!("../assets/default_theme_dark.json");
+pub const DEFAULT_DARK_THEME: &str = include_str!("../assets/default_theme_dark.jsonc");
 /// bundled theme for light mode
-pub const DEFAULT_LIGHT_THEME: &str = include_str!("../assets/default_theme_light.json");
+pub const DEFAULT_LIGHT_THEME: &str = include_str!("../assets/default_theme_light.jsonc");
 
 impl Theme {
     fn bundled_json(dark: bool) -> &'static str {
@@ -60,10 +60,12 @@ impl Theme {
         let Some(path) = custom else {
             return Self::bundled(dark);
         };
-        // relative paths start from the folder with settings.json
+        // relative paths start from the folder with settings.jsonc
         let path = Settings::path()
             .and_then(|settings| settings.parent().map(|dir| dir.join(path)))
             .unwrap_or_else(|| path.clone());
+        // a missing theme file starts as a copy of the bundled one, ready to edit
+        create_default_file(&path, Self::bundled_json(dark));
         match std::fs::read_to_string(&path) {
             Ok(json) => Self::parse(&json, dark).unwrap_or_else(|error| {
                 eprintln!("invalid theme in {}: {error}", path.display());

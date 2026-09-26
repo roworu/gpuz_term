@@ -1,4 +1,4 @@
-//! user settings, read from a json file
+//! user settings, read from a jsonc file
 
 mod options;
 #[cfg(test)]
@@ -54,7 +54,7 @@ impl Default for TerminalSettings {
 impl Global for Settings {}
 
 /// commented settings file written on first launch
-pub const DEFAULT_SETTINGS: &str = include_str!("../../assets/default_settings.json");
+pub const DEFAULT_SETTINGS: &str = include_str!("../../assets/default_settings.jsonc");
 
 /// write a default config file if it does not exist yet, so users can see what to change
 pub fn create_default_file(path: &Path, contents: &str) {
@@ -71,14 +71,14 @@ pub fn create_default_file(path: &Path, contents: &str) {
 }
 
 impl Settings {
-    /// `$XDG_CONFIG_HOME/gpuz_term/settings.json`, falling back to `~/.config`
+    /// `$XDG_CONFIG_HOME/gpuz_term/settings.jsonc`, falling back to `~/.config`
     pub fn path() -> Option<PathBuf> {
         // xdg says empty or relative values must be ignored
         let config_dir = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .filter(|dir| dir.is_absolute())
             .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-        Some(config_dir.join("gpuz_term").join("settings.json"))
+        Some(config_dir.join("gpuz_term").join("settings.jsonc"))
     }
 
     /// parse settings, we allow comments and trailing commas
