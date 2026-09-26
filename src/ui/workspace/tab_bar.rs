@@ -1,6 +1,5 @@
 //! drawing the workspace: tab bar on top, active terminal below
 // TODO: need a setting on where to put tabs (top, bottom, left?, right?)
-// TODO: need a setting on dynamycally show/hide tab bar if only one tab exists
 
 use gpui::{AnyElement, Context, Window, div, prelude::*, px, rems};
 
@@ -52,6 +51,7 @@ impl Render for Workspace {
         let ui_font_family = settings.ui_font_family.clone();
         // ui scales in rems of the ui font size
         window.set_rem_size(px(settings.ui_font_size));
+        let show_bar = !(settings.hide_bar_for_one_tab && self.tabs.len() == 1);
         let tabs: Vec<_> = (0..self.tabs.len())
             .map(|ix| self.render_tab(ix, cx))
             .collect();
@@ -65,27 +65,29 @@ impl Render for Workspace {
             .bg(theme.terminal_background)
             .font_family(ui_font_family)
             .text_sm()
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .h(rems(2.))
-                    .bg(theme.tab_bar_background)
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .children(tabs)
-                    .child(
-                        div()
-                            .id("new-tab")
-                            .flex()
-                            .items_center()
-                            .px_3()
-                            .text_color(theme.text_muted)
-                            .hover(|button| button.text_color(theme.text))
-                            .child("+")
-                            .on_click(cx.listener(|this, _, window, cx| this.add_tab(window, cx))),
-                    ),
-            )
+            .when(show_bar, |workspace| {
+                workspace.child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .h(rems(2.))
+                        .bg(theme.tab_bar_background)
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .children(tabs)
+                        .child(
+                            div()
+                                .id("new-tab")
+                                .flex()
+                                .items_center()
+                                .px_3()
+                                .text_color(theme.text_muted)
+                                .hover(|button| button.text_color(theme.text))
+                                .child("+")
+                                .on_click(cx.listener(|this, _, window, cx| this.add_tab(window, cx))),
+                        ),
+                )
+            })
             .children(
                 self.tabs
                     .get(self.active)

@@ -9,6 +9,8 @@
   "ui_font_family": "JetBrainsMonoNL Nerd Font Mono",
   // ui font size in pixels, the whole ui scales with it
   "ui_font_size": 16,
+  // hide the tab bar while only one tab is open, ctrl-t still opens new tabs
+  "hide_bar_for_one_tab": false,
 
   "theme": {
     // which theme to use, applied right away when the system switches:

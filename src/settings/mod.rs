@@ -16,6 +16,7 @@ pub use options::{CursorShape, LineHeight, Shell, ThemeMode};
 pub struct Settings {
     pub ui_font_family: String,
     pub ui_font_size: f32,
+    pub hide_bar_for_one_tab: bool,
     pub theme: ThemeSettings,
     pub terminal: TerminalSettings,
 }
