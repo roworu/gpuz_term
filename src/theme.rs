@@ -3,11 +3,11 @@
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
 use gpui::{App, Global, Hsla, rgb};
 use serde::Deserialize;
+use serde_json_lenient::Value;
 
-use crate::settings::Settings;
+use crate::settings::{Settings, create_default_file, merge};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(default)]
 pub struct Theme {
     pub tab_bar_background: Hsla,
     pub tab_active_background: Hsla,
@@ -26,31 +26,14 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self {
-            tab_bar_background: rgb(0x2f343e).into(),
-            tab_active_background: rgb(0x282c33).into(),
-            border: rgb(0x464b57).into(),
-            text: rgb(0xdce0e5).into(),
-            text_muted: rgb(0xa9afbc).into(),
-            terminal_background: rgb(0x282c34).into(),
-            terminal_foreground: rgb(0xabb2bf).into(),
-            cursor: rgb(0x74ade8).into(),
-            ansi: [
-                0x282c34, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xabb2bf, // normal
-                0x636d83, 0xea858b, 0xaad581, 0xffd885, 0x85c1ff, 0xd398eb, 0x6ed5de, 0xfafafa, // bright
-            ]
-            .map(|color| rgb(color).into()),
-            ansi_dim: [
-                0x3b3f4a, 0xa7545a, 0x6d8f59, 0xb8985b, 0x457cad, 0x8d54a0, 0x3c818a, 0x8f969b,
-            ]
-            .map(|color| rgb(color).into()),
-            bright_foreground: rgb(0xdce0e5).into(),
-            dim_foreground: rgb(0x636d83).into(),
-        }
+        serde_json_lenient::from_str(DEFAULT_THEME).expect("bundled default theme is invalid")
     }
 }
 
 impl Global for Theme {}
+
+/// commented theme file written on first launch
+pub const DEFAULT_THEME: &str = include_str!("../assets/default_theme.json");
 
 impl Theme {
     /// theme.json next to settings.json
@@ -60,7 +43,9 @@ impl Theme {
 
     /// parse theme, we allow comments and trailing commas
     pub fn parse(json: &str) -> serde_json_lenient::Result<Self> {
-        serde_json_lenient::from_str(json)
+        let mut theme: Value = serde_json_lenient::from_str(DEFAULT_THEME)?;
+        merge(&mut theme, serde_json_lenient::from_str(json)?);
+        serde_json_lenient::from_value(theme)
     }
 
     /// load theme from the theme file, using defaults when it is missing or invalid
@@ -68,6 +53,7 @@ impl Theme {
         let Some(path) = Self::path() else {
             return Self::default();
         };
+        create_default_file(&path, DEFAULT_THEME);
         let Ok(json) = std::fs::read_to_string(&path) else {
             return Self::default();
         };

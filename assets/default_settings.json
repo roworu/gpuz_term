@@ -1,0 +1,31 @@
+// gpuz_term settings
+//
+// this file is created with default values on first launch.
+// comments and trailing commas are allowed, missing values use their defaults.
+// if this file is invalid, all defaults are used and an error is printed.
+// changes are applied on next launch.
+{
+  // font used for tabs and other ui text
+  "ui_font_family": "JetBrainsMonoNL Nerd Font Mono",
+  // ui font size in pixels, the whole ui scales with it
+  "ui_font_size": 16,
+
+  "terminal": {
+    // shell to launch in new tabs:
+    //   "system"                                                   - login shell of current user
+    //   { "program": "zsh" }                                       - specific program
+    //   { "with_arguments": { "program": "bash", "args": ["--login"] } } - program with arguments
+    "shell": "system",
+    // terminal font, bundled "JetBrainsMonoNL Nerd Font Mono" is always available
+    "font_family": "JetBrainsMonoNL Nerd Font Mono",
+    // terminal font size in pixels
+    "font_size": 16,
+    // line height as a multiple of font size:
+    //   "standard"          - 1.3
+    //   "comfortable"       - 1.618
+    //   { "custom": 1.5 }   - any value
+    "line_height": "standard",
+    // cursor shape: "block", "bar", "underline" or "hollow"
+    "cursor_shape": "block",
+  },
+}

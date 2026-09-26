@@ -4,15 +4,15 @@ mod options;
 #[cfg(test)]
 mod tests;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::{App, Global};
 use serde::Deserialize;
+use serde_json_lenient::Value;
 
 pub use options::{CursorShape, LineHeight, Shell};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(default)]
 pub struct Settings {
     pub ui_font_family: String,
     pub ui_font_size: f32,
@@ -21,16 +21,11 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self {
-            ui_font_family: ".SystemUIFont".into(),
-            ui_font_size: 16.,
-            terminal: TerminalSettings::default(),
-        }
+        serde_json_lenient::from_str(DEFAULT_SETTINGS).expect("bundled default settings are invalid")
     }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(default)]
 pub struct TerminalSettings {
     pub shell: Shell,
     pub font_family: String,
@@ -41,17 +36,28 @@ pub struct TerminalSettings {
 
 impl Default for TerminalSettings {
     fn default() -> Self {
-        Self {
-            shell: Shell::System,
-            font_family: "JetBrainsMonoNL Nerd Font Mono".into(),
-            font_size: 16.,
-            line_height: LineHeight::Standard,
-            cursor_shape: CursorShape::Block,
-        }
+        Settings::default().terminal
     }
 }
 
 impl Global for Settings {}
+
+/// commented settings file written on first launch
+pub const DEFAULT_SETTINGS: &str = include_str!("../../assets/default_settings.json");
+
+/// write a default config file if it does not exist yet, so users can see what to change
+pub fn create_default_file(path: &Path, contents: &str) {
+    if path.exists() {
+        return;
+    }
+    let result = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(path, contents));
+    if let Err(error) = result {
+        eprintln!("failed to create {}: {error}", path.display());
+    }
+}
 
 impl Settings {
     /// `$XDG_CONFIG_HOME/gpuz_term/settings.json`, falling back to `~/.config`
@@ -66,7 +72,9 @@ impl Settings {
 
     /// parse settings, we allow comments and trailing commas
     pub fn parse(json: &str) -> serde_json_lenient::Result<Self> {
-        serde_json_lenient::from_str(json)
+        let mut settings: Value = serde_json_lenient::from_str(DEFAULT_SETTINGS)?;
+        merge(&mut settings, serde_json_lenient::from_str(json)?);
+        serde_json_lenient::from_value(settings)
     }
 
     /// load settings from the settings file, using defaults when it is missing or invalid
@@ -74,6 +82,7 @@ impl Settings {
         let Some(path) = Self::path() else {
             return Self::default();
         };
+        create_default_file(&path, DEFAULT_SETTINGS);
         let Ok(json) = std::fs::read_to_string(&path) else {
             return Self::default();
         };
@@ -86,5 +95,19 @@ impl Settings {
     /// settings loaded at startup
     pub fn get(cx: &App) -> &Self {
         cx.global::<Self>()
+    }
+}
+
+// user values override defaults key by key, so a partial file keeps the other defaults.
+// anything that is not an object on both sides (enum values, arrays) is replaced as a whole
+pub(crate) fn merge(base: &mut Value, overrides: Value) {
+    match (base, overrides) {
+        (Value::Object(base), Value::Object(overrides)) => {
+            for (key, value) in overrides {
+                // a missing key starts as null, which the fallback arm replaces with the value
+                merge(base.entry(key).or_insert(Value::Null), value);
+            }
+        }
+        (base, overrides) => *base = overrides,
     }
 }
