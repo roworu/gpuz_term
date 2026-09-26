@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags: [ "v*" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, name: x86_64-linux }
+          - { os: macos-latest, target: aarch64-apple-darwin, name: aarch64-macos }
+          - { os: macos-latest, target: x86_64-apple-darwin, name: x86_64-macos }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, name: x86_64-windows }
+
+    runs-on: ${{ matrix.os }}
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          clang cmake pkg-config \
+          libfontconfig-dev libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev \
+          libwayland-dev libx11-xcb-dev libxcb1-dev libvulkan-dev \
+          libasound2-dev libssl-dev libzstd-dev
+
+    - name: Update rust
+      run: |
+        rustup update stable && rustup default stable
+        rustup target add ${{ matrix.target }}
+
+    - name: Build
+      run: cargo build --release --verbose --target ${{ matrix.target }}
+
+    - name: Package
+      run: |
+        name=gpuz_term-${GITHUB_REF_NAME}-${{ matrix.name }}
+        mkdir "$name"
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          cp target/${{ matrix.target }}/release/gpuz_term.exe "$name/"
+          7z a "$name.zip" "$name"
+        else
+          cp target/${{ matrix.target }}/release/gpuz_term "$name/"
+          strip "$name/gpuz_term"
+          tar -czf "$name.tar.gz" "$name"
+        fi
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.name }}
+        path: |
+          gpuz_term-*.tar.gz
+          gpuz_term-*.zip
+
+  publish:
+
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+
+    - uses: actions/download-artifact@v4
+      with:
+        merge-multiple: true
+
+    - name: Publish
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: gh release create "$GITHUB_REF_NAME" gpuz_term-* --repo "$GITHUB_REPOSITORY" --generate-notes
