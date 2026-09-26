@@ -2,14 +2,15 @@
 // TODO: need a setting on where to put tabs (top, bottom, left?, right?)
 // TODO: need a setting on dynamycally show/hide tab bar if only one tab exists
 
-use gpui::{AnyElement, Context, Window, div, prelude::*, px, rems, rgb};
+use gpui::{AnyElement, Context, Window, div, prelude::*, px, rems};
 
 use super::Workspace;
-use crate::{settings::Settings, theme};
+use crate::{settings::Settings, theme::Theme};
 
 impl Workspace {
     fn render_tab(&self, ix: usize, cx: &Context<Self>) -> AnyElement {
         let is_active = ix == self.active;
+        let theme = Theme::get(cx);
         let title = self.tabs[ix].view.read(cx).terminal().read(cx).title();
         div()
             .id(("tab", ix))
@@ -20,9 +21,9 @@ impl Workspace {
             .h_full()
             .px_3()
             .border_r_1()
-            .border_color(rgb(theme::BORDER))
-            .when(is_active, |tab| tab.bg(rgb(theme::TAB_ACTIVE_BACKGROUND)))
-            .text_color(rgb(if is_active { theme::TEXT } else { theme::TEXT_MUTED }))
+            .border_color(theme.border)
+            .when(is_active, |tab| tab.bg(theme.tab_active_background))
+            .text_color(if is_active { theme.text } else { theme.text_muted })
             .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(ix, window, cx)))
             .child(div().max_w(rems(12.5)).overflow_hidden().whitespace_nowrap().child(title))
             .child(
@@ -33,7 +34,7 @@ impl Workspace {
                     .invisible()
                     .group_hover("tab", |close| close.visible())
                     .when(is_active, |close| close.visible())
-                    .hover(|close| close.bg(rgb(theme::BORDER)))
+                    .hover(|close| close.bg(theme.border))
                     .child("×")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
@@ -47,6 +48,7 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = Settings::get(cx);
+        let theme = Theme::get(cx);
         let ui_font_family = settings.ui_font_family.clone();
         // ui scales in rems of the ui font size
         window.set_rem_size(px(settings.ui_font_size));
@@ -60,7 +62,7 @@ impl Render for Workspace {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(theme::TERMINAL_BACKGROUND))
+            .bg(theme.terminal_background)
             .font_family(ui_font_family)
             .text_sm()
             .child(
@@ -68,9 +70,9 @@ impl Render for Workspace {
                     .flex()
                     .flex_none()
                     .h(rems(2.))
-                    .bg(rgb(theme::TAB_BAR_BACKGROUND))
+                    .bg(theme.tab_bar_background)
                     .border_b_1()
-                    .border_color(rgb(theme::BORDER))
+                    .border_color(theme.border)
                     .children(tabs)
                     .child(
                         div()
@@ -78,8 +80,8 @@ impl Render for Workspace {
                             .flex()
                             .items_center()
                             .px_3()
-                            .text_color(rgb(theme::TEXT_MUTED))
-                            .hover(|button| button.text_color(rgb(theme::TEXT)))
+                            .text_color(theme.text_muted)
+                            .hover(|button| button.text_color(theme.text))
                             .child("+")
                             .on_click(cx.listener(|this, _, window, cx| this.add_tab(window, cx))),
                     ),

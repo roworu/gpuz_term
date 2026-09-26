@@ -11,7 +11,7 @@ use gpui::{
 
 use crate::{
     terminal::{IndexedCell, TerminalBounds},
-    theme,
+    theme::Theme,
 };
 
 /// adjacent cells with same style, shaped and painted as one line
@@ -95,6 +95,7 @@ pub(super) fn layout_grid(
     cells: &[IndexedCell],
     display_offset: usize,
     font: &Font,
+    theme: &Theme,
 ) -> (Vec<LayoutRect>, Vec<BatchedTextRun>) {
     let mut rects: Vec<LayoutRect> = Vec::new();
     let mut runs: Vec<BatchedTextRun> = Vec::new();
@@ -110,7 +111,7 @@ pub(super) fn layout_grid(
         }
 
         if !is_default_background(&bg) {
-            let color = theme::convert_color(&bg);
+            let color = theme.convert_color(&bg);
             match rects.last_mut() {
                 Some(last)
                     if last.color == color
@@ -133,7 +134,7 @@ pub(super) fn layout_grid(
             continue;
         }
 
-        let style = cell_style(cell, fg, font);
+        let style = cell_style(cell, fg, font, theme);
         match runs.last_mut() {
             Some(run) if run.can_append(line, column, &style) => {
                 run.push(cell.c, cell.zerowidth())
@@ -166,8 +167,8 @@ fn is_blank(cell: &Cell) -> bool {
             .intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT | Flags::INVERSE)
 }
 
-fn cell_style(cell: &Cell, fg: Color, font: &Font) -> TextRun {
-    let mut color = theme::convert_color(&fg);
+fn cell_style(cell: &Cell, fg: Color, font: &Font, theme: &Theme) -> TextRun {
+    let mut color = theme.convert_color(&fg);
     if cell.flags.contains(Flags::DIM) {
         color.a *= 0.7;
     }

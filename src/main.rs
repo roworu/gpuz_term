@@ -12,6 +12,7 @@ use gpui_platform::application;
 
 use crate::{
     settings::Settings,
+    theme::Theme,
     ui::{
         terminal_view::Paste,
         workspace::{CloseTab, NewTab, Workspace},
@@ -38,7 +39,9 @@ fn main() {
     application().run(|cx: &mut App| {
         load_fonts(cx);
         cx.set_global(Settings::load());
+        cx.set_global(Theme::load());
         cx.bind_keys([
+            // TODO: need expose to settings here
             KeyBinding::new("ctrl-t", NewTab, None),
             KeyBinding::new("ctrl-w", CloseTab, None),
             KeyBinding::new("ctrl-shift-v", Paste, Some("Terminal")),

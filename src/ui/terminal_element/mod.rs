@@ -8,13 +8,13 @@ use alacritty_terminal::vte::ansi::CursorShape;
 use gpui::{
     App, Bounds, ContentMask, Element, ElementId, Entity, FocusHandle, Font, FontFeatures,
     FontStyle, FontWeight, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels,
-    Style, TextRun, Window, fill, point, px, relative, rgb, size,
+    Style, TextRun, Window, fill, point, px, relative, size,
 };
 
 use crate::{
     settings::Settings,
     terminal::{Terminal, TerminalBounds},
-    theme,
+    theme::Theme,
     ui::terminal_view::TerminalView,
 };
 use cursor::CursorLayout;
@@ -125,9 +125,10 @@ impl Element for TerminalElement {
             terminal.sync();
         });
 
+        let theme = Theme::get(cx);
         let content = &self.terminal.read(cx).last_content;
         let (rects, batched_text_runs) =
-            layout_grid(&content.cells, content.display_offset, &font);
+            layout_grid(&content.cells, content.display_offset, &font, theme);
 
         let cursor_line = content.cursor.point.line.0 + content.display_offset as i32;
         let cursor = (content.cursor.shape != CursorShape::Hidden
@@ -142,7 +143,7 @@ impl Element for TerminalElement {
                 &[TextRun {
                     len,
                     font: font.clone(),
-                    color: rgb(theme::TERMINAL_BACKGROUND).into(),
+                    color: theme.terminal_background,
                     background_color: None,
                     underline: None,
                     strikethrough: None,
@@ -189,7 +190,7 @@ impl Element for TerminalElement {
         cx: &mut App,
     ) {
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            window.paint_quad(fill(bounds, rgb(theme::TERMINAL_BACKGROUND)));
+            window.paint_quad(fill(bounds, Theme::get(cx).terminal_background));
 
             let origin = layout.dimensions.bounds.origin;
             window.handle_input(
