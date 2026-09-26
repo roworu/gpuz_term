@@ -82,7 +82,10 @@ impl TerminalBuilder {
 
         let pty = tty::new(&pty_options, TerminalBounds::default().into(), window_id)
             .context("failed to open pty")?;
+        #[cfg(unix)]
         let shell_pid = pty.child().id();
+        #[cfg(windows)]
+        let shell_pid = pty.child_watcher().pid().map_or(0, |pid| pid.get());
 
         let event_loop = EventLoop::new(
             term.clone(),
