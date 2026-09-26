@@ -182,4 +182,92 @@ mod tests {
             theme.dim_foreground
         );
     }
+
+    #[test]
+    fn bundled_themes_are_commented_and_parse() {
+        assert!(DEFAULT_DARK_THEME.contains("//"));
+        assert!(DEFAULT_LIGHT_THEME.contains("//"));
+        assert_eq!(Theme::default(), Theme::bundled(true));
+        assert_ne!(Theme::bundled(true), Theme::bundled(false));
+        for dark in [true, false] {
+            assert_eq!(Theme::parse("{}", dark).unwrap(), Theme::bundled(dark));
+        }
+    }
+
+    #[test]
+    fn partial_theme_fills_from_bundled_of_same_mode() {
+        for dark in [true, false] {
+            let theme = Theme::parse("{\n // comment\n \"cursor\": \"#abcdef\",\n}", dark).unwrap();
+            let mut expected = Theme::bundled(dark);
+            expected.cursor = rgb(0xabcdef).into();
+            assert_eq!(theme, expected);
+        }
+    }
+
+    #[test]
+    fn ansi_is_replaced_whole() {
+        for dark in [true, false] {
+            assert!(Theme::parse(r##"{"ansi": ["#ffffff"]}"##, dark).is_err());
+            let ansi = vec!["\"#123456\""; 16].join(",");
+            let theme = Theme::parse(&format!(r#"{{"ansi": [{ansi}]}}"#), dark).unwrap();
+            assert!(theme.ansi.iter().all(|c| *c == rgb(0x123456).into()));
+            assert_eq!(theme.ansi_dim, Theme::bundled(dark).ansi_dim);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_themes() {
+        for json in ["{", "not json", "[]", "null", r#"{"cursor": "nope"}"#, r#"{"cursor": null}"#] {
+            assert!(Theme::parse(json, true).is_err(), "expected error for {json:?}");
+        }
+    }
+
+    #[test]
+    fn load_reads_custom_theme_files() {
+        use crate::settings::tests::{temp_dir, with_config_home};
+
+        let settings = |dark: Option<&Path>, light: Option<&Path>| ThemeSettings {
+            mode: ThemeMode::System,
+            dark: dark.map(PathBuf::from),
+            light: light.map(PathBuf::from),
+        };
+        let dir = temp_dir("theme_load");
+        let config = dir.join("gpuz_term");
+        std::fs::create_dir_all(config.join("themes")).unwrap();
+        with_config_home(&dir, || {
+            let none = settings(None, None);
+            assert_eq!(Theme::load(&none, true), Theme::bundled(true));
+            assert_eq!(Theme::load(&none, false), Theme::bundled(false));
+
+            // relative paths start from the config folder
+            std::fs::write(config.join("themes/dark.jsonc"), r##"{"border": "#010203"}"##).unwrap();
+            let custom = settings(Some(Path::new("themes/dark.jsonc")), None);
+            let mut expected = Theme::bundled(true);
+            expected.border = rgb(0x010203).into();
+            assert_eq!(Theme::load(&custom, true), expected);
+            assert_eq!(Theme::load(&custom, false), Theme::bundled(false));
+
+            // absolute paths are used as is
+            let abs = dir.join("abs.jsonc");
+            std::fs::write(&abs, r##"{"text": "#0a0b0c"}"##).unwrap();
+            let custom = settings(None, Some(&abs));
+            assert_eq!(Theme::load(&custom, false).text, rgb(0x0a0b0c).into());
+
+            // missing files are created from the bundled theme of their mode
+            let custom = settings(Some(Path::new("new_dark.jsonc")), Some(Path::new("new_light.jsonc")));
+            assert_eq!(Theme::load(&custom, true), Theme::bundled(true));
+            let dark = std::fs::read_to_string(config.join("new_dark.jsonc")).unwrap();
+            let light = std::fs::read_to_string(config.join("new_light.jsonc")).unwrap();
+            assert_eq!(dark, DEFAULT_DARK_THEME);
+            assert_eq!(light, DEFAULT_LIGHT_THEME);
+
+            // invalid files and directories fall back to bundled, files untouched
+            std::fs::write(config.join("broken.jsonc"), "{ broken").unwrap();
+            let custom = settings(Some(Path::new("broken.jsonc")), Some(Path::new("themes")));
+            assert_eq!(Theme::load(&custom, true), Theme::bundled(true));
+            assert_eq!(Theme::load(&custom, false), Theme::bundled(false));
+            assert_eq!(std::fs::read_to_string(config.join("broken.jsonc")).unwrap(), "{ broken");
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
