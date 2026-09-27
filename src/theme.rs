@@ -110,7 +110,6 @@ impl Theme {
     /// convert alacritty color to gpui color
     pub fn convert_color(&self, color: &Color) -> Hsla {
         match color {
-            // zed maps index 268 to dim background, so dim foreground needs its own arm
             Color::Named(NamedColor::DimForeground) => self.dim_foreground,
             // named colors share their index with the 0-15 and 256-267 slots
             Color::Named(named) => self.get_color_at_index(*named as usize),

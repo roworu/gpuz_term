@@ -106,11 +106,12 @@ impl Element for TerminalElement {
         let font_id = text_system.resolve_font(&font);
         let cell_width = text_system.advance(font_id, font_size, 'm').unwrap().width;
 
-        // zed leaves one cell of gutter on the left
         let mut origin = bounds.origin;
         origin.x += cell_width;
         let mut grid_size = bounds.size;
         grid_size.width = (grid_size.width - cell_width).max(cell_width * 2.);
+        // alacritty panics on a grid without rows
+        grid_size.height = grid_size.height.max(line_height);
 
         // snap to device pixels so glyphs do not jitter while resizing
         let scale_factor = window.scale_factor();

@@ -167,11 +167,27 @@ fn is_blank(cell: &Cell) -> bool {
             .intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT | Flags::INVERSE)
 }
 
-fn cell_style(cell: &Cell, fg: Color, font: &Font, theme: &Theme) -> TextRun {
-    let mut color = theme.convert_color(&fg);
-    if cell.flags.contains(Flags::DIM) {
-        color.a *= 0.7;
+fn dim_color(fg: Color, theme: &Theme) -> Hsla {
+    match fg {
+        Color::Named(named) if named.to_dim() != named => {
+            theme.convert_color(&Color::Named(named.to_dim()))
+        }
+        Color::Indexed(index @ 0..=7) => theme.get_color_at_index(259 + index as usize),
+        Color::Indexed(index @ 8..=15) => theme.get_color_at_index(index as usize - 8),
+        _ => {
+            let mut color = theme.convert_color(&fg);
+            color.a *= 0.7;
+            color
+        }
     }
+}
+
+fn cell_style(cell: &Cell, fg: Color, font: &Font, theme: &Theme) -> TextRun {
+    let color = if cell.flags.contains(Flags::DIM) {
+        dim_color(fg, theme)
+    } else {
+        theme.convert_color(&fg)
+    };
     let underline = cell.flags.intersects(Flags::ALL_UNDERLINES).then(|| UnderlineStyle {
         color: Some(color),
         thickness: px(1.),

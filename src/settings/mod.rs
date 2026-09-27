@@ -59,6 +59,22 @@ impl Default for TerminalSettings {
 
 impl Global for Settings {}
 
+// smaller fonts break the terminal grid, bigger ones stop growing
+const FONT_SIZE_RANGE: (f32, f32) = (6., 72.);
+// lines below 1 overlap, above 3 waste the screen
+const LINE_HEIGHT_RANGE: (f32, f32) = (1., 3.);
+
+fn limit(name: &str, value: f32, (min, max): (f32, f32)) -> Option<f32> {
+    if !(value >= min) {
+        eprintln!("{name} {value} is below {min}, using the default");
+        return None;
+    }
+    if value > max {
+        eprintln!("{name} {value} is above {max}, using {max}");
+    }
+    Some(value.min(max))
+}
+
 /// commented settings file written on first launch
 pub const DEFAULT_SETTINGS: &str = include_str!("../../assets/default_settings.jsonc");
 
@@ -91,7 +107,18 @@ impl Settings {
     pub fn parse(json: &str) -> serde_json_lenient::Result<Self> {
         let mut settings: Value = serde_json_lenient::from_str(DEFAULT_SETTINGS)?;
         merge(&mut settings, serde_json_lenient::from_str(json)?);
-        serde_json_lenient::from_value(settings)
+        let mut settings: Self = serde_json_lenient::from_value(settings)?;
+        let defaults = Self::default();
+        settings.ui_font_size = limit("ui_font_size", settings.ui_font_size, FONT_SIZE_RANGE)
+            .unwrap_or(defaults.ui_font_size);
+        let terminal = &mut settings.terminal;
+        terminal.font_size = limit("terminal.font_size", terminal.font_size, FONT_SIZE_RANGE)
+            .unwrap_or(defaults.terminal.font_size);
+        if let LineHeight::Custom(value) = terminal.line_height {
+            terminal.line_height = limit("terminal.line_height", value, LINE_HEIGHT_RANGE)
+                .map_or(defaults.terminal.line_height, LineHeight::Custom);
+        }
+        Ok(settings)
     }
 
     /// load settings from the settings file, using defaults when it is missing or invalid
@@ -163,7 +190,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn empty_file_uses_zed_defaults() {
+    fn empty_file_uses_defaults() {
         let settings = Settings::parse("{}").unwrap();
         assert_eq!(settings, Settings::default());
         assert_eq!(settings.ui_font_size, 16.);
@@ -181,12 +208,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn parses_zed_style_settings() {
+    fn parse_settings() {
         let settings = Settings::parse(
             r#"{
-                // comments and trailing commas are allowed, like in zed
+                // comments are allowed
                 "ui_font_family": "JetBrainsMonoNL Nerd Font Mono",
-                "ui_font_size": 16,
+                "ui_font_size": 16, // inline comments too
                 "terminal": {
                     "shell": {
                         "with_arguments": { "program": "/bin/bash", "args": ["--login"] }

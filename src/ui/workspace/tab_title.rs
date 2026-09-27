@@ -41,11 +41,30 @@ pub(super) fn build_title(blocks: &[TabTitleBlock], inputs: &TitleInputs) -> Str
 }
 
 fn prompt() -> String {
-    let user = std::env::var("USER").unwrap_or_default();
+    let user = user_name();
     let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
         .or_else(|_| std::fs::read_to_string("/etc/hostname"))
         .unwrap_or_default();
     format!("{user}@{}", host.trim())
+}
+
+// USER is often unset in containers and services, so fall back to other vars and /etc/passwd
+fn user_name() -> String {
+    ["USER", "LOGNAME", "USERNAME"]
+        .iter()
+        .find_map(|var| std::env::var(var).ok().filter(|name| !name.is_empty()))
+        .or_else(passwd_user)
+        .unwrap_or_default()
+}
+
+fn passwd_user() -> Option<String> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let uid = status.lines().find_map(|line| line.strip_prefix("Uid:"))?.split_whitespace().next()?.to_owned();
+    std::fs::read_to_string("/etc/passwd").ok()?.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        let name = fields.next()?;
+        (fields.nth(1)? == uid).then(|| name.to_owned())
+    })
 }
 
 fn folder_name(cwd: &Path) -> String {
@@ -133,7 +152,8 @@ mod tests {
     fn prompt_is_user_at_host() {
         let prompt = build(&[TabTitleBlock::Prompt]);
         let (user, host) = prompt.split_once('@').unwrap();
-        assert_eq!(user, std::env::var("USER").unwrap_or_default());
+        assert_eq!(user, user_name());
+        assert!(!user.is_empty());
         assert!(!host.is_empty());
     }
 

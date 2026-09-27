@@ -35,9 +35,9 @@ impl Terminal {
                 let color = self.term.lock().colors()[index].unwrap_or_else(|| {
                     let rgba: gpui::Rgba = crate::theme::Theme::get(cx).get_color_at_index(index).into();
                     alacritty_terminal::vte::ansi::Rgb {
-                        r: (rgba.r * 255.) as u8,
-                        g: (rgba.g * 255.) as u8,
-                        b: (rgba.b * 255.) as u8,
+                        r: (rgba.r * 255.).round() as u8,
+                        g: (rgba.g * 255.).round() as u8,
+                        b: (rgba.b * 255.).round() as u8,
                     }
                 });
                 self.write_to_pty(format(color).into_bytes());
