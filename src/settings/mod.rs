@@ -65,7 +65,7 @@ const FONT_SIZE_RANGE: (f32, f32) = (6., 72.);
 const LINE_HEIGHT_RANGE: (f32, f32) = (1., 3.);
 
 fn limit(name: &str, value: f32, (min, max): (f32, f32)) -> Option<f32> {
-    if !(value >= min) {
+    if value.is_nan() || value < min {
         eprintln!("{name} {value} is below {min}, using the default");
         return None;
     }
@@ -262,8 +262,7 @@ pub(crate) mod tests {
     #[test]
     fn partial_top_level_section_keeps_terminal_defaults() {
         let settings = Settings::parse(r#"{"ui_font_size": 12}"#).unwrap();
-        let mut expected = Settings::default();
-        expected.ui_font_size = 12.;
+        let expected = Settings { ui_font_size: 12., ..Settings::default() };
         assert_eq!(settings, expected);
     }
 

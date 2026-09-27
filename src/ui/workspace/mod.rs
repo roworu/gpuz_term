@@ -33,6 +33,9 @@ pub struct ActivateTab(pub usize);
 // programs, folders and command output change without events, so titles are polled
 const TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
+// tab title blocks, window title blocks, active tab, per tab inputs
+type TitleSnapshot = (Vec<TabTitleBlock>, Vec<TabTitleBlock>, usize, Vec<(EntityId, TitleInputs)>);
+
 struct Tab {
     view: Entity<TerminalView>,
     /// built from `tab_title` blocks, empty until the first refresh
@@ -176,10 +179,7 @@ impl Workspace {
         self.refresh_titles.unbounded_send(()).ok();
     }
 
-    fn title_inputs(
-        &self,
-        cx: &App,
-    ) -> (Vec<TabTitleBlock>, Vec<TabTitleBlock>, usize, Vec<(EntityId, TitleInputs)>) {
+    fn title_inputs(&self, cx: &App) -> TitleSnapshot {
         let settings = Settings::get(cx);
         let inputs = self
             .tabs
@@ -279,7 +279,7 @@ mod tests {
             cx.set_global(Theme::default());
             cx.bind_keys(keybindings.bindings());
         });
-        let (ws, cx) = cx.add_window_view(|window, cx| Workspace::new(window, cx));
+        let (ws, cx) = cx.add_window_view(Workspace::new);
         cx.run_until_parked();
         for _ in 1..tabs {
             ws.update_in(cx, |ws, window, cx| ws.add_tab(window, cx));

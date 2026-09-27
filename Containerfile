@@ -8,6 +8,8 @@ RUN apt-get update \
         libasound2-dev libssl-dev libzstd-dev \
     && rm -rf /var/lib/apt/lists/*
 
+RUN rustup component add clippy
+
 ENV SHELL=/bin/bash
 ENV CARGO_TARGET_DIR=/src/target/podman
 WORKDIR /src
