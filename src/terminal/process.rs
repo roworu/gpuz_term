@@ -34,3 +34,88 @@ fn process_name(pid: u32) -> Option<String> {
         Some(comm.trim().to_string())
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::process::{Child, Command};
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    /// kills and reaps the child when the test ends, even on panic
+    struct Kill(Child);
+
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            self.0.kill().ok();
+            self.0.wait().ok();
+        }
+    }
+
+    fn wait_for(pid: u32, want: &str) -> Option<ForegroundProcess> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let p = foreground_process(pid);
+            if p.as_ref().is_some_and(|p| p.name == want) || Instant::now() > deadline {
+                return p;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    // with a controlling terminal the tty's foreground process is reported instead of the pid,
+    // so name checks only work without one, like in the container
+    fn has_no_ctty() -> bool {
+        let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
+        stat.rsplit_once(')').unwrap().1.split_whitespace().nth(5).unwrap() == "-1"
+    }
+
+    #[test]
+    fn missing_pid_is_none() {
+        assert!(foreground_process(u32::MAX - 1).is_none());
+        assert!(foreground_process(0).is_none());
+    }
+
+    #[test]
+    fn comm_with_parens_and_spaces_parses() {
+        if !has_no_ctty() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("gpuz_term_proc_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("we ird) (x 1 2");
+        std::fs::copy("/bin/sleep", &exe).unwrap();
+        // other tests fork while the copy's write fd is open, so exec may briefly fail with ETXTBSY
+        let mut tries = 0;
+        let child = loop {
+            match Command::new(&exe).arg("10").current_dir(&dir).spawn() {
+                Ok(child) => break Kill(child),
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 100 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => panic!("{e}"),
+            }
+        };
+        let p = wait_for(child.0.id(), "we ird) (x 1 2").expect("parsed");
+        assert_eq!(p.name, "we ird) (x 1 2");
+        assert_eq!(p.cwd.as_deref(), Some(dir.as_path()));
+        drop(child);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn login_dash_and_path_are_stripped() {
+        if !has_no_ctty() {
+            return;
+        }
+        let child = Kill(
+            Command::new("bash")
+                .args(["-c", "exec -a -/usr/bin/mysleep sleep 10"])
+                .spawn()
+                .unwrap(),
+        );
+        let p = wait_for(child.0.id(), "mysleep").expect("some");
+        assert_eq!(p.name, "mysleep");
+    }
+}

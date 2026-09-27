@@ -150,6 +150,8 @@ fn rgba_color(r: u8, g: u8, b: u8) -> Hsla {
 
 #[cfg(test)]
 mod tests {
+    use gpui::Rgba;
+
     use super::*;
 
     #[test]
@@ -268,5 +270,26 @@ mod tests {
             assert_eq!(std::fs::read_to_string(config.join("broken.jsonc")).unwrap(), "{ broken");
         });
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundled_theme_colors_round_trip_exactly() {
+        // color replies (osc 4/10/11/12) round the theme hsla back to 8 bit rgb, which must
+        // give the exact hex from the theme file
+        for dark in [true, false] {
+            let value: Value = serde_json_lenient::from_str(Theme::bundled_json(dark)).unwrap();
+            let theme = Theme::bundled(dark);
+            let c = |v: f32| (v * 255.).round() as u8;
+            let hex = |h: Hsla| {
+                let rgba: Rgba = h.into();
+                format!("#{:02x}{:02x}{:02x}", c(rgba.r), c(rgba.g), c(rgba.b))
+            };
+            for (i, color) in theme.ansi.iter().enumerate() {
+                assert_eq!(hex(*color), value["ansi"][i].as_str().unwrap().to_lowercase(), "dark={dark} ansi {i}");
+            }
+            assert_eq!(hex(theme.terminal_background), value["terminal_background"].as_str().unwrap().to_lowercase());
+            assert_eq!(hex(theme.terminal_foreground), value["terminal_foreground"].as_str().unwrap().to_lowercase());
+            assert_eq!(hex(theme.cursor), value["cursor"].as_str().unwrap().to_lowercase());
+        }
     }
 }

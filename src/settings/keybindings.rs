@@ -143,4 +143,40 @@ mod tests {
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn activate_tab_0_is_rejected() {
+        let error = Keybindings::parse(r#"{"activate_tab_0": "alt-0"}"#).unwrap_err();
+        assert!(error.to_string().contains("unknown action"), "{error}");
+    }
+
+    #[test]
+    fn activate_tab_10_adds_a_binding_for_index_9() {
+        let keys = Keybindings::parse(r#"{"activate_tab_10": "alt-0"}"#).unwrap();
+        let bindings = keys.bindings();
+        assert_eq!(bindings.len(), 14);
+        let strokes = |ix: usize| -> Vec<Keystroke> {
+            let found: Vec<_> = bindings
+                .iter()
+                .filter(|b| b.action().partial_eq(&ActivateTab(ix)))
+                .collect();
+            assert_eq!(found.len(), 1, "expected one binding for tab {ix}");
+            found[0].keystrokes().iter().map(|k| k.inner().clone()).collect()
+        };
+        assert_eq!(strokes(9), vec![Keystroke::parse("alt-0").unwrap()]);
+        // defaults untouched
+        assert_eq!(strokes(0), vec![Keystroke::parse("alt-1").unwrap()]);
+    }
+
+    #[test]
+    fn every_action_has_a_comment() {
+        for action in ["new_tab", "close_tab", "next_tab", "paste", "activate_tab_1"] {
+            let line = DEFAULT_KEYBINDINGS
+                .lines()
+                .position(|line| line.trim_start().starts_with(&format!("\"{action}\"")))
+                .unwrap();
+            let previous = DEFAULT_KEYBINDINGS.lines().nth(line - 1).unwrap();
+            assert!(previous.trim_start().starts_with("//"), "{action} has no comment above it");
+        }
+    }
 }

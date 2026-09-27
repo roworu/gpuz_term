@@ -379,4 +379,63 @@ pub(crate) mod tests {
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    fn font_json(field: &str, value: &str) -> String {
+        match field {
+            "ui_font_size" => format!(r#"{{"ui_font_size": {value}}}"#),
+            _ => format!(r#"{{"terminal": {{"font_size": {value}}}}}"#),
+        }
+    }
+
+    fn parse_font(field: &str, value: &str) -> f32 {
+        let settings = Settings::parse(&font_json(field, value)).unwrap();
+        match field {
+            "ui_font_size" => settings.ui_font_size,
+            _ => settings.terminal.font_size,
+        }
+    }
+
+    #[test]
+    fn font_size_below_min_uses_default() {
+        for field in ["ui_font_size", "terminal.font_size"] {
+            for value in ["0", "0.0", "-0", "-0.0", "1", "0.5", "1e-30", "5", "-1", "-6", "-16", "-72", "-100", "-1e30", "-3.4e38"] {
+                let got = parse_font(field, value);
+                // exactly the default, not -0.0 or a clamp to 6
+                assert_eq!(got.to_bits(), 16.0f32.to_bits(), "{field} {value} gave {got}");
+            }
+        }
+    }
+
+    #[test]
+    fn font_size_above_max_is_capped() {
+        for field in ["ui_font_size", "terminal.font_size"] {
+            for value in ["72.5", "73", "80", "100", "200", "1000", "1e6", "1e30", "3.4e38", "1e39", "1e300"] {
+                let got = parse_font(field, value);
+                assert_eq!(got, 72.0, "{field} {value} gave {got}");
+            }
+        }
+    }
+
+    #[test]
+    fn line_height_custom_boundaries() {
+        let lh = |v: &str| {
+            let json = format!(r#"{{"terminal": {{"line_height": {{"custom": {v}}}}}}}"#);
+            Settings::parse(&json).unwrap().terminal.line_height
+        };
+        assert_eq!(lh("0.99"), LineHeight::Standard);
+        assert_eq!(lh("0.9999"), LineHeight::Standard);
+        assert_eq!(lh("1"), LineHeight::Custom(1.0));
+        assert_eq!(lh("3"), LineHeight::Custom(3.0));
+        assert_eq!(lh("3.01"), LineHeight::Custom(3.0));
+        assert_eq!(lh("3.0001"), LineHeight::Custom(3.0));
+    }
+
+    #[test]
+    fn tab_title_array_replaces_default_whole() {
+        // default has 3 blocks, a shorter or longer user array must not be index merged
+        let settings = Settings::parse(r#"{"tab_title": ["number", "prompt"]}"#).unwrap();
+        assert_eq!(settings.tab_title, vec![TabTitleBlock::Number, TabTitleBlock::Prompt]);
+        let settings = Settings::parse(r#"{"tab_title": ["folder"]}"#).unwrap();
+        assert_eq!(settings.tab_title, vec![TabTitleBlock::Folder]);
+    }
 }

@@ -249,3 +249,268 @@ impl Workspace {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        path::PathBuf,
+        time::Instant,
+    };
+
+    use alacritty_terminal::term::TermMode;
+    use gpui::{TestAppContext, VisualTestContext};
+
+    use super::*;
+    use crate::{settings::Keybindings, terminal::Terminal};
+
+    /// open a workspace with `tabs` tabs and user keybindings `keys`, the last tab is active
+    fn open_with<'a>(
+        cx: &'a mut TestAppContext,
+        tabs: usize,
+        keys: &str,
+    ) -> (Entity<Workspace>, &'a mut VisualTestContext) {
+        let keybindings = Keybindings::parse(keys).unwrap();
+        // shells wake gpui tasks from alacritty's pty thread, which the test scheduler
+        // only tolerates with parking allowed
+        cx.executor().allow_parking();
+        cx.update(|cx| {
+            cx.set_global(Settings::default());
+            // bundled theme, so no theme files are created
+            cx.set_global(Theme::default());
+            cx.bind_keys(keybindings.bindings());
+        });
+        let (ws, cx) = cx.add_window_view(|window, cx| Workspace::new(window, cx));
+        cx.run_until_parked();
+        for _ in 1..tabs {
+            ws.update_in(cx, |ws, window, cx| ws.add_tab(window, cx));
+            cx.run_until_parked();
+        }
+        assert_eq!(ws.update(cx, |ws, _| ws.tabs.len()), tabs, "failed to spawn shells");
+        (ws, cx)
+    }
+
+    fn open(cx: &mut TestAppContext, tabs: usize) -> (Entity<Workspace>, &mut VisualTestContext) {
+        open_with(cx, tabs, "{}")
+    }
+
+    fn views(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<EntityId> {
+        ws.update(cx, |ws, _| ws.tabs.iter().map(|t| t.view.entity_id()).collect())
+    }
+
+    /// active tab index, checking that focus is on it
+    fn current(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> usize {
+        ws.update_in(cx, |ws, window, cx| {
+            let focused: Vec<usize> = ws
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, tab)| tab.view.focus_handle(cx).is_focused(window))
+                .map(|(ix, _)| ix)
+                .collect();
+            assert_eq!(focused, vec![ws.active], "focus does not follow the active tab");
+            ws.active
+        })
+    }
+
+    fn next(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> usize {
+        ws.update_in(cx, |ws, window, cx| ws.next_tab(&NextTab, window, cx));
+        cx.run_until_parked();
+        current(ws, cx)
+    }
+
+    fn activate(ws: &Entity<Workspace>, cx: &mut VisualTestContext, ix: usize) -> usize {
+        ws.update_in(cx, |ws, window, cx| ws.activate_tab_action(&ActivateTab(ix), window, cx));
+        cx.run_until_parked();
+        current(ws, cx)
+    }
+
+    fn keys(ws: &Entity<Workspace>, cx: &mut VisualTestContext, keystrokes: &str) -> usize {
+        cx.run_until_parked();
+        cx.simulate_keystrokes(keystrokes);
+        cx.run_until_parked();
+        current(ws, cx)
+    }
+
+    #[gpui::test]
+    fn next_tab_wraps_from_last_to_first(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 3);
+        assert_eq!(current(&ws, cx), 2);
+        assert_eq!(next(&ws, cx), 0);
+    }
+
+    #[gpui::test]
+    fn activate_tab_out_of_range_is_ignored(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 3);
+        activate(&ws, cx, 1);
+        let before = views(&ws, cx);
+        for ix in [3, 4, 8, 9, 99, usize::MAX - 1, usize::MAX] {
+            assert_eq!(activate(&ws, cx, ix), 1, "index {ix}");
+        }
+        assert_eq!(views(&ws, cx), before);
+    }
+
+    #[gpui::test]
+    fn activate_tab_after_close_uses_shifted_indexes(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 4);
+        let old = views(&ws, cx);
+        ws.update_in(cx, |ws, window, cx| ws.close_tab_at(1, window, cx));
+        cx.run_until_parked();
+        // index 1 is now the old third tab, index 3 is gone
+        assert_eq!(activate(&ws, cx, 1), 1);
+        assert_eq!(views(&ws, cx)[1], old[2]);
+        assert_eq!(activate(&ws, cx, 3), 1);
+        assert_eq!(activate(&ws, cx, 2), 2);
+    }
+
+    #[gpui::test]
+    fn disabled_next_tab_ignores_ctrl_tab(cx: &mut TestAppContext) {
+        let (ws, cx) = open_with(cx, 3, r#"{"next_tab": null}"#);
+        assert_eq!(keys(&ws, cx, "ctrl-tab"), 2);
+        assert_eq!(keys(&ws, cx, "alt-1"), 0);
+    }
+
+    // raw input bytes a focus reader collects before it ends
+    const READ: usize = 30;
+
+    /// let the pty threads run, then move the fake clock so batched alacritty events flow
+    fn pump(cx: &mut VisualTestContext) {
+        std::thread::sleep(Duration::from_millis(15));
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+    }
+
+    fn wait_until(cx: &mut VisualTestContext, what: &str, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !done(cx) {
+            assert!(Instant::now() < deadline, "timed out: {what}");
+            pump(cx);
+        }
+    }
+
+    // gpui test windows start inactive, activating is like a user click
+    fn set_window_active(cx: &mut VisualTestContext, active: bool) {
+        if active {
+            cx.update(|window, _| window.activate_window());
+        } else {
+            cx.deactivate_window();
+        }
+        cx.run_until_parked();
+        pump(cx);
+    }
+
+    fn terminal(ws: &Entity<Workspace>, cx: &mut VisualTestContext, ix: usize) -> Entity<Terminal> {
+        ws.update(cx, |ws, cx| ws.tabs[ix].view.read(cx).terminal().clone())
+    }
+
+    /// in the active tab: optionally enable focus reporting (mode 1004), then save READ raw
+    /// input bytes as hex into the returned file
+    fn reader(ws: &Entity<Workspace>, cx: &mut VisualTestContext, focus_mode: bool, name: &str) -> (usize, PathBuf) {
+        let file = std::env::temp_dir().join(format!("gpuz_term_focus_{name}_{}", std::process::id()));
+        let ready = file.with_extension("ready");
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(&ready);
+        let mode = if focus_mode { "printf '\\033[?1004h'; " } else { "" };
+        let (f, r) = (file.display(), ready.display());
+        let command = format!(
+            "{mode}stty raw -echo; touch {r}; dd bs=1 count={READ} 2>/dev/null | od -An -v -tx1 | tr -d ' \\n' > {f}.tmp; mv {f}.tmp {f}; stty sane\r"
+        );
+        let ix = current(ws, cx);
+        let terminal = terminal(ws, cx, ix);
+        terminal.update(cx, |t, _| t.input(command.into_bytes()));
+        wait_until(cx, "reader never started", |_| ready.exists());
+        wait_until(cx, "focus mode never reached the view", |cx| {
+            terminal.read_with(cx, |t, _| t.last_content.mode.contains(TermMode::FOCUS_IN_OUT)) == focus_mode
+        });
+        // let dd start reading
+        for _ in 0..5 {
+            pump(cx);
+        }
+        std::fs::remove_file(&ready).ok();
+        (ix, file)
+    }
+
+    fn send_to(ws: &Entity<Workspace>, cx: &mut VisualTestContext, ix: usize, text: &str) {
+        let bytes = text.as_bytes().to_vec();
+        terminal(ws, cx, ix).update(cx, |t, _| t.input(bytes));
+        pump(cx);
+    }
+
+    /// fill the reader up and return what it got before: "I", "O" or other bytes as hex, with
+    /// repeated identical reports merged
+    fn finish(ws: &Entity<Workspace>, cx: &mut VisualTestContext, (ix, file): (usize, PathBuf)) -> Vec<String> {
+        send_to(ws, cx, ix, &"x".repeat(READ));
+        wait_until(cx, "no reader output", |_| file.exists());
+        let hex = std::fs::read_to_string(&file).unwrap();
+        std::fs::remove_file(&file).ok();
+        let mut tokens: Vec<String> = Vec::new();
+        let mut rest = hex.as_str();
+        while !rest.is_empty() {
+            if let Some(r) = rest.strip_prefix("1b5b49") {
+                tokens.push("I".into());
+                rest = r;
+            } else if let Some(r) = rest.strip_prefix("1b5b4f") {
+                tokens.push("O".into());
+                rest = r;
+            } else {
+                tokens.push(rest[..2].into());
+                rest = &rest[2..];
+            }
+        }
+        while tokens.last().is_some_and(|t| t == "78") {
+            tokens.pop();
+        }
+        // gpui's focus listeners may fire twice for one activation change
+        tokens.dedup_by(|a, b| a == b && (a == "I" || a == "O"));
+        tokens
+    }
+
+    #[gpui::test]
+    fn focus_mode_reports_out_on_deactivate_and_in_on_activate(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        set_window_active(cx, true);
+        let r = reader(&ws, cx, true, "report");
+        set_window_active(cx, false);
+        set_window_active(cx, true);
+        assert_eq!(finish(&ws, cx, r), ["O", "I"]);
+    }
+
+    #[gpui::test]
+    fn no_reports_without_focus_mode(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        set_window_active(cx, true);
+        let r = reader(&ws, cx, false, "off");
+        for _ in 0..3 {
+            set_window_active(cx, false);
+            set_window_active(cx, true);
+        }
+        send_to(&ws, cx, 0, "abc");
+        assert_eq!(finish(&ws, cx, r), ["61", "62", "63"]);
+    }
+
+    #[gpui::test]
+    fn only_the_active_tab_reports_window_activation(cx: &mut TestAppContext) {
+        for active in 0..3 {
+            let (ws, cx) = open(cx, 3);
+            set_window_active(cx, true);
+            let mut readers = Vec::new();
+            for ix in 0..3 {
+                activate(&ws, cx, ix);
+                readers.push(reader(&ws, cx, true, &format!("tab{active}_{ix}")));
+            }
+            activate(&ws, cx, active);
+            set_window_active(cx, false);
+            set_window_active(cx, true);
+            // tabs 0 and 1 lost focus to the next tab during setup, picking `active` moves focus
+            // from tab 2, then only `active` sees the window
+            let mut want: Vec<Vec<&str>> = vec![vec!["O"], vec!["O"], vec![]];
+            if active != 2 {
+                want[2].push("O");
+                want[active].push("I");
+            }
+            want[active].extend(["O", "I"]);
+            for (ix, r) in readers.into_iter().enumerate() {
+                assert_eq!(finish(&ws, cx, r), want[ix], "tab {ix} with tab {active} active");
+            }
+        }
+    }
+}

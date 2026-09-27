@@ -165,4 +165,20 @@ mod tests {
         assert_eq!(build(&[TabTitleBlock::Exec("echo hi; sleep 10 &".into())]), "");
         assert!(start.elapsed() < Duration::from_secs(8));
     }
+
+    #[test]
+    fn exec_timeout_is_bounded() {
+        // output printed before the hang is dropped too
+        let start = Instant::now();
+        assert_eq!(build(&[TabTitleBlock::Exec("echo early; sleep 10".into())]), "");
+        assert!(start.elapsed() < Duration::from_secs(4), "took {:?}", start.elapsed());
+    }
+
+    #[test]
+    fn exec_background_child_holding_stdout_is_bounded() {
+        // sh exits right away but a background child keeps the pipe open, the title must not wait for it
+        let start = Instant::now();
+        let _ = build(&[TabTitleBlock::Exec("echo hi; sleep 8 &".into())]);
+        assert!(start.elapsed() < Duration::from_secs(4), "took {:?}", start.elapsed());
+    }
 }
