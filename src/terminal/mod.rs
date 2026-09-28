@@ -131,12 +131,10 @@ impl Terminal {
     /// apply queued events and refresh the grid snapshot if anything changed
     pub fn sync(&mut self) {
         // many frames are repaints for focus or tab changes, skip the copy for those
-        let dirty = self.dirty.swap(false, Ordering::Acquire);
-        if !dirty && self.events.is_empty() {
+        if !self.dirty.swap(false, Ordering::Acquire) && self.events.is_empty() {
             return;
         }
-        let term = self.term.clone();
-        let mut term = term.lock_unfair();
+        let mut term = self.term.lock_unfair();
         for event in self.events.drain(..) {
             match event {
                 InternalEvent::Resize(bounds) => {
@@ -160,11 +158,9 @@ impl Drop for Terminal {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use gpui::point;
-
     use alacritty_terminal::event::Event as AlacTermEvent;
     use futures::{FutureExt, StreamExt};
-    use gpui::{Bounds, px, size};
+    use gpui::{Bounds, point, px, size};
 
     use super::{
         Terminal, TerminalBounds, TerminalBuilder, foreground_process, process::ForegroundProcess,

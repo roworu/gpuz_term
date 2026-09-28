@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use gpui::{App, Global};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json_lenient::Value;
 
 pub use keybindings::Keybindings;
@@ -96,6 +97,26 @@ pub fn create_default_file(path: &Path, contents: &str) {
     }
 }
 
+/// read a config file, creating it from `defaults` first; falls back to defaults when missing or invalid
+pub(crate) fn load_file<T: Default>(
+    path: Option<PathBuf>,
+    defaults: &str,
+    what: &str,
+    parse: impl Fn(&str) -> serde_json_lenient::Result<T>,
+) -> T {
+    let Some(path) = path else {
+        return T::default();
+    };
+    create_default_file(&path, defaults);
+    let Ok(json) = std::fs::read_to_string(&path) else {
+        return T::default();
+    };
+    parse(&json).unwrap_or_else(|error| {
+        eprintln!("invalid {what} in {}: {error}", path.display());
+        T::default()
+    })
+}
+
 impl Settings {
     /// `$XDG_CONFIG_HOME/kuterm/settings.jsonc`, falling back to `~/.config`
     pub fn path() -> Option<PathBuf> {
@@ -109,9 +130,7 @@ impl Settings {
 
     /// parse settings, we allow comments and trailing commas
     pub fn parse(json: &str) -> serde_json_lenient::Result<Self> {
-        let mut settings: Value = serde_json_lenient::from_str(DEFAULT_SETTINGS)?;
-        merge(&mut settings, serde_json_lenient::from_str(json)?);
-        let mut settings: Self = serde_json_lenient::from_value(settings)?;
+        let mut settings: Self = parse_over(DEFAULT_SETTINGS, json)?;
         let defaults = Self::default();
         settings.ui_font_size = limit("ui_font_size", settings.ui_font_size, FONT_SIZE_RANGE)
             .unwrap_or(defaults.ui_font_size);
@@ -127,17 +146,7 @@ impl Settings {
 
     /// load settings from the settings file, using defaults when it is missing or invalid
     pub fn load() -> Self {
-        let Some(path) = Self::path() else {
-            return Self::default();
-        };
-        create_default_file(&path, DEFAULT_SETTINGS);
-        let Ok(json) = std::fs::read_to_string(&path) else {
-            return Self::default();
-        };
-        Self::parse(&json).unwrap_or_else(|error| {
-            eprintln!("invalid settings in {}: {error}", path.display());
-            Self::default()
-        })
+        load_file(Self::path(), DEFAULT_SETTINGS, "settings", Self::parse)
     }
 
     /// settings loaded at startup
@@ -158,6 +167,16 @@ pub(crate) fn merge(base: &mut Value, overrides: Value) {
         }
         (base, overrides) => *base = overrides,
     }
+}
+
+/// parse `json` deep merged over the bundled `defaults`
+pub(crate) fn parse_over<T: DeserializeOwned>(
+    defaults: &str,
+    json: &str,
+) -> serde_json_lenient::Result<T> {
+    let mut value: Value = serde_json_lenient::from_str(defaults)?;
+    merge(&mut value, serde_json_lenient::from_str(json)?);
+    serde_json_lenient::from_value(value)
 }
 
 #[cfg(test)]

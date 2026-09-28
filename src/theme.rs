@@ -5,9 +5,8 @@ use std::path::{Path, PathBuf};
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
 use gpui::{App, Global, Hsla, WindowAppearance, rgb};
 use serde::Deserialize;
-use serde_json_lenient::Value;
 
-use crate::settings::{Settings, ThemeMode, ThemeSettings, create_default_file, merge};
+use crate::settings::{Settings, ThemeMode, ThemeSettings, create_default_file, parse_over};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Theme {
@@ -56,9 +55,7 @@ impl Theme {
 
     /// parse theme, missing colors come from the bundled theme of the same mode
     pub fn parse(json: &str, dark: bool) -> serde_json_lenient::Result<Self> {
-        let mut theme: Value = serde_json_lenient::from_str(Self::bundled_json(dark))?;
-        merge(&mut theme, serde_json_lenient::from_str(json)?);
-        serde_json_lenient::from_value(theme)
+        parse_over(Self::bundled_json(dark), json)
     }
 
     // relative paths start from the folder with settings.jsonc
@@ -163,6 +160,7 @@ fn rgba_color(r: u8, g: u8, b: u8) -> Hsla {
 #[cfg(test)]
 mod tests {
     use gpui::Rgba;
+    use serde_json_lenient::Value;
 
     use super::*;
 

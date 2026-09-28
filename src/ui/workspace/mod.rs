@@ -152,13 +152,12 @@ impl Workspace {
             title: String::new(),
             _subscription: subscription,
         });
-        self.refresh_titles();
         self.activate_tab(self.tabs.len() - 1, window, cx);
     }
 
     fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.active = ix;
-        // window title follows the active tab
+        // window title follows the active tab, and tab numbers shift after add or close
         self.refresh_titles();
         self.tab_scroll.scroll_to_item(ix);
         self.tabs[ix].view.focus_handle(cx).focus(window, cx);
@@ -171,8 +170,6 @@ impl Workspace {
             cx.quit();
             return;
         }
-        // tab numbers after the closed one shift
-        self.refresh_titles();
         // closing active tab activates one on its left
         // TODO: should be configurable
         let active = if ix < self.active || (ix == self.active && ix > 0) {

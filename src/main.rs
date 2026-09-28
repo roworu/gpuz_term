@@ -15,7 +15,6 @@ use crate::{
 };
 
 fn init(cx: &mut App) {
-    // 1) bundle jetbrains mono nerd font as binary
     let fonts: Vec<Cow<'static, [u8]>> = vec![
         Cow::Borrowed(include_bytes!(
             "../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-Bold.ttf"
@@ -34,13 +33,8 @@ fn init(cx: &mut App) {
         .add_fonts(fonts)
         .expect("failed to load bundled fonts");
 
-    // 2) load settings
     cx.set_global(Settings::load());
-
-    // 3) apply theme
     Theme::apply(cx.window_appearance(), cx);
-
-    // 4) load keybindings
     cx.bind_keys(Keybindings::load().bindings());
 }
 

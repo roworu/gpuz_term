@@ -28,8 +28,6 @@ use gpui::{Context, Task};
 use super::{Content, Terminal, TerminalBounds};
 use crate::settings::{Shell, TerminalSettings};
 
-const DEFAULT_SCROLL_HISTORY_LINES: usize = 10_000;
-
 #[derive(Clone)]
 pub(super) struct ZedListener {
     events: UnboundedSender<AlacTermEvent>,
@@ -82,7 +80,6 @@ impl TerminalBuilder {
         };
 
         let config = Config {
-            scrolling_history: DEFAULT_SCROLL_HISTORY_LINES,
             default_cursor_style: CursorStyle {
                 shape: settings.cursor_shape.into(),
                 blinking: false,
@@ -147,7 +144,7 @@ impl TerminalBuilder {
                 };
 
                 // then batch rest in 4ms windows
-                'outer: loop {
+                loop {
                     let mut events = Vec::new();
                     let mut timer = cx
                         .background_executor()
@@ -172,7 +169,7 @@ impl TerminalBuilder {
                     }
 
                     if events.is_empty() && !wakeup {
-                        break 'outer;
+                        break;
                     }
 
                     let Ok(()) = terminal.update(cx, |this, cx| {

@@ -131,7 +131,7 @@ impl TerminalView {
     }
 
     /// finish the drag, the selection stays until the next click or input
-    pub fn mouse_up(&mut self, _: &mut Context<Self>) {
+    pub fn mouse_up(&mut self) {
         self.selecting = false;
     }
 

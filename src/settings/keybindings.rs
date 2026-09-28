@@ -4,9 +4,8 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use gpui::{KeyBinding, Keystroke};
 use serde::de::Error;
-use serde_json_lenient::Value;
 
-use super::{Settings, create_default_file, merge};
+use super::{Settings, load_file, parse_over};
 use crate::ui::{
     terminal_view::{Copy, Paste},
     workspace::{ActivateTab, CloseTab, NewTab, NextTab},
@@ -48,9 +47,7 @@ impl Keybindings {
 
     /// parse keybindings over the bundled ones, rejecting unknown actions and bad keys
     pub fn parse(json: &str) -> serde_json_lenient::Result<Self> {
-        let mut bindings: Value = serde_json_lenient::from_str(DEFAULT_KEYBINDINGS)?;
-        merge(&mut bindings, serde_json_lenient::from_str(json)?);
-        let bindings: BTreeMap<String, Option<String>> = serde_json_lenient::from_value(bindings)?;
+        let bindings: BTreeMap<String, Option<String>> = parse_over(DEFAULT_KEYBINDINGS, json)?;
         for (action, keys) in &bindings {
             let Some(keys) = keys else { continue };
             if keys.trim().is_empty() {
@@ -71,17 +68,7 @@ impl Keybindings {
 
     /// load keybindings from the keybindings file, using defaults when it is missing or invalid
     pub fn load() -> Self {
-        let Some(path) = Self::path() else {
-            return Self::default();
-        };
-        create_default_file(&path, DEFAULT_KEYBINDINGS);
-        let Ok(json) = std::fs::read_to_string(&path) else {
-            return Self::default();
-        };
-        Self::parse(&json).unwrap_or_else(|error| {
-            eprintln!("invalid keybindings in {}: {error}", path.display());
-            Self::default()
-        })
+        load_file(Self::path(), DEFAULT_KEYBINDINGS, "keybindings", Self::parse)
     }
 
     /// gpui bindings for every enabled action

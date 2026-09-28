@@ -7,7 +7,7 @@ mod input_handler;
 use alacritty_terminal::vte::ansi::CursorShape;
 use gpui::{
     App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, Entity, FocusHandle,
-    Font, FontFeatures, FontStyle, FontWeight, GlobalElementId, Hitbox, HitboxBehavior,
+    Font, FontFeatures, GlobalElementId, Hitbox, HitboxBehavior,
     InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Style, TextRun, Window, fill, point, px, relative, size,
 };
@@ -75,20 +75,11 @@ impl TerminalElement {
         let view = self.terminal_view.clone();
         window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
             if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
-                view.update(cx, |view, cx| view.mouse_up(cx));
+                view.update(cx, |view, _| view.mouse_up());
             }
         });
     }
 
-    fn text_font(family: &str) -> Font {
-        Font {
-            family: family.to_string().into(),
-            features: FontFeatures::disable_ligatures(),
-            fallbacks: None,
-            weight: FontWeight::NORMAL,
-            style: FontStyle::Normal,
-        }
-    }
 }
 
 impl Element for TerminalElement {
@@ -126,7 +117,10 @@ impl Element for TerminalElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let settings = &Settings::get(cx).terminal;
-        let font = Self::text_font(&settings.font_family);
+        let font = Font {
+            features: FontFeatures::disable_ligatures(),
+            ..gpui::font(settings.font_family.clone())
+        };
         let font_size = px(settings.font_size);
         let line_height = (font_size * settings.line_height.value()).round();
         let text_system = cx.text_system();
@@ -168,13 +162,11 @@ impl Element for TerminalElement {
             && cursor_line >= 0
             && (cursor_line as usize) < dimensions.num_lines())
         .then(|| {
-            let text = content.cursor_char.to_string();
-            let len = text.len();
             let text = window.text_system().shape_line(
-                text.into(),
+                content.cursor_char.to_string().into(),
                 font_size,
                 &[TextRun {
-                    len,
+                    len: content.cursor_char.len_utf8(),
                     font: font.clone(),
                     color: theme.terminal_background,
                     background_color: None,
@@ -242,7 +234,7 @@ impl Element for TerminalElement {
             for rect in &layout.rects {
                 rect.paint(origin, &layout.dimensions, window);
             }
-            for run in &layout.batched_text_runs {
+            for run in &mut layout.batched_text_runs {
                 run.paint(origin, &layout.dimensions, layout.font_size, window, cx);
             }
             if let Some(cursor) = &layout.cursor {

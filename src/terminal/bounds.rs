@@ -37,10 +37,7 @@ impl Default for TerminalBounds {
         TerminalBounds::new(
             px(5.),
             px(5.),
-            Bounds {
-                origin: gpui::Point::default(),
-                size: size(px(500.), px(30.)),
-            },
+            Bounds::new(gpui::Point::default(), size(px(500.), px(30.))),
         )
     }
 }

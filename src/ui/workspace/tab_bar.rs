@@ -1,7 +1,7 @@
 //! drawing the workspace: tab bar on top, active terminal below
 // TODO: need a setting on where to put tabs (top, bottom, left?, right?)
 
-use gpui::{AnyElement, Context, Div, ScrollHandle, Stateful, Window, div, prelude::*, px, rems};
+use gpui::{Context, Div, ScrollHandle, Stateful, Window, div, prelude::*, px, rems};
 
 use super::Workspace;
 use crate::{
@@ -62,7 +62,7 @@ fn tab(ix: usize, title: String, settings: &Settings) -> Stateful<Div> {
 }
 
 impl Workspace {
-    fn render_tab(&self, ix: usize, cx: &Context<Self>) -> AnyElement {
+    fn render_tab(&self, ix: usize, cx: &Context<Self>) -> Stateful<Div> {
         let is_active = ix == self.active;
         let theme = Theme::get(cx);
         let tab_state = &self.tabs[ix];
@@ -103,7 +103,6 @@ impl Workspace {
                         this.close_tab_at(ix, window, cx);
                     })),
             )
-            .into_any_element()
     }
 }
 
@@ -111,19 +110,15 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = Settings::get(cx);
         let theme = Theme::get(cx);
-        let ui_font_family = settings.ui_font_family.clone();
         // ui scales in rems of the ui font size
         window.set_rem_size(px(settings.ui_font_size));
         let show_bar = !(settings.hide_bar_for_one_tab && self.tabs.len() == 1);
-        let tabs: Vec<_> = (0..self.tabs.len())
-            .map(|ix| self.render_tab(ix, cx))
-            .collect();
         // fixed width tabs only take the room they need, so the button follows the last one.
         // expanded tabs fill the row anyway, which puts the button at the right end
         let hug_tabs = settings.new_tab_button == NewTabButton::AfterTabs && !settings.expand_tabs;
         let tab_row = tab_row(&self.tab_scroll)
             .when(hug_tabs, |row| row.flex_initial())
-            .children(tabs);
+            .children((0..self.tabs.len()).map(|ix| self.render_tab(ix, cx)));
         let new_tab = div()
             .id("new-tab")
             .flex()
@@ -143,7 +138,7 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .bg(theme.terminal_background)
-            .font_family(ui_font_family)
+            .font_family(settings.ui_font_family.clone())
             .text_sm()
             .when(show_bar, |workspace| {
                 workspace.child(
