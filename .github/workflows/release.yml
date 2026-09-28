@@ -1,17 +1,22 @@
 name: Release
 
 on:
-  push:
-    branches: [ "release/v*" ]
+  pull_request:
+    types: [ closed ]
+    branches: [ "main" ]
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_REF: ${{ github.event.pull_request.head.ref }}
 
 permissions:
   contents: read
 
 jobs:
   build:
+
+    # only publish after a release branch is merged into main, not when it is opened
+    if: github.event.pull_request.merged && startsWith(github.event.pull_request.head.ref, 'release/v')
 
     strategy:
       fail-fast: false
@@ -54,7 +59,7 @@ jobs:
 
     - name: Package
       run: |
-        name=kuterm-${GITHUB_REF_NAME#release/}-${{ matrix.name }}
+        name=kuterm-${RELEASE_REF#release/}-${{ matrix.name }}
         mkdir "$name"
         if [ "$RUNNER_OS" = "Windows" ]; then
           cp target/${{ matrix.target }}/release/kuterm.exe "$name/"
@@ -68,8 +73,8 @@ jobs:
     - name: Package deb, rpm, appimage
       if: runner.os == 'Linux'
       run: |
-        name=kuterm-${GITHUB_REF_NAME#release/}-${{ matrix.name }}
-        version=${GITHUB_REF_NAME#release/v}
+        name=kuterm-${RELEASE_REF#release/}-${{ matrix.name }}
+        version=${RELEASE_REF#release/v}
         cargo install --locked cargo-deb cargo-generate-rpm
         cargo deb --no-build --no-strip --target ${{ matrix.target }} --deb-version "$version" -o "$name.deb"
         cargo generate-rpm --target ${{ matrix.target }} --set-metadata "version = \"$version\"" -o "$name.rpm"
@@ -120,4 +125,4 @@ jobs:
     - name: Publish
       env:
         GH_TOKEN: ${{ github.token }}
-      run: gh release create "${GITHUB_REF_NAME#release/}" kuterm-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --generate-notes
+      run: gh release create "${RELEASE_REF#release/}" kuterm-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --generate-notes
