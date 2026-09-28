@@ -93,7 +93,7 @@ mod tests {
         if !has_no_ctty() {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("gpuz_term_proc_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kuterm_proc_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("we ird) (x 1 2");
         std::fs::copy("/bin/bash", &exe).unwrap();

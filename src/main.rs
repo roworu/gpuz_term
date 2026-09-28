@@ -58,7 +58,7 @@ fn main() {
                     title: Some(Settings::get(cx).default_title.clone().into()),
                     ..Default::default()
                 }),
-                app_id: Some("gpuz_term".into()),
+                app_id: Some("kuterm".into()),
                 icon: Some(Arc::new(
                     image::load_from_memory(include_bytes!("../assets/logo/icon_256.png"))
                         .expect("failed to load bundled icon")

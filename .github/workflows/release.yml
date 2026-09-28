@@ -54,21 +54,21 @@ jobs:
 
     - name: Package
       run: |
-        name=gpuz_term-${GITHUB_REF_NAME#release/}-${{ matrix.name }}
+        name=kuterm-${GITHUB_REF_NAME#release/}-${{ matrix.name }}
         mkdir "$name"
         if [ "$RUNNER_OS" = "Windows" ]; then
-          cp target/${{ matrix.target }}/release/gpuz_term.exe "$name/"
+          cp target/${{ matrix.target }}/release/kuterm.exe "$name/"
           7z a "$name.zip" "$name"
         else
-          strip target/${{ matrix.target }}/release/gpuz_term
-          cp target/${{ matrix.target }}/release/gpuz_term "$name/"
+          strip target/${{ matrix.target }}/release/kuterm
+          cp target/${{ matrix.target }}/release/kuterm "$name/"
           tar -czf "$name.tar.gz" "$name"
         fi
 
     - name: Package deb, rpm, appimage
       if: runner.os == 'Linux'
       run: |
-        name=gpuz_term-${GITHUB_REF_NAME#release/}-${{ matrix.name }}
+        name=kuterm-${GITHUB_REF_NAME#release/}-${{ matrix.name }}
         version=${GITHUB_REF_NAME#release/v}
         cargo install --locked cargo-deb cargo-generate-rpm
         cargo deb --no-build --no-strip --target ${{ matrix.target }} --deb-version "$version" -o "$name.deb"
@@ -76,22 +76,22 @@ jobs:
 
         curl -fsSLo linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
         chmod +x linuxdeploy
-        cp assets/logo/icon_256.png gpuz_term.png
+        cp assets/logo/icon_256.png kuterm.png
         APPIMAGE_EXTRACT_AND_RUN=1 OUTPUT="$name.AppImage" ./linuxdeploy --appdir AppDir \
-          -e target/${{ matrix.target }}/release/gpuz_term \
-          -d assets/gpuz_term.desktop \
-          -i gpuz_term.png \
+          -e target/${{ matrix.target }}/release/kuterm \
+          -d assets/kuterm.desktop \
+          -i kuterm.png \
           --output appimage
 
     - uses: actions/upload-artifact@v7
       with:
         name: ${{ matrix.name }}
         path: |
-          gpuz_term-*.tar.gz
-          gpuz_term-*.zip
-          gpuz_term-*.deb
-          gpuz_term-*.rpm
-          gpuz_term-*.AppImage
+          kuterm-*.tar.gz
+          kuterm-*.zip
+          kuterm-*.deb
+          kuterm-*.rpm
+          kuterm-*.AppImage
 
   publish:
 
@@ -110,14 +110,14 @@ jobs:
         merge-multiple: true
 
     - name: Checksums
-      run: sha256sum gpuz_term-* > SHA256SUMS
+      run: sha256sum kuterm-* > SHA256SUMS
 
     - name: Attest build provenance
       uses: actions/attest-build-provenance@v4
       with:
-        subject-path: gpuz_term-*
+        subject-path: kuterm-*
 
     - name: Publish
       env:
         GH_TOKEN: ${{ github.token }}
-      run: gh release create "${GITHUB_REF_NAME#release/}" gpuz_term-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --generate-notes
+      run: gh release create "${GITHUB_REF_NAME#release/}" kuterm-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --generate-notes

@@ -97,14 +97,14 @@ pub fn create_default_file(path: &Path, contents: &str) {
 }
 
 impl Settings {
-    /// `$XDG_CONFIG_HOME/gpuz_term/settings.jsonc`, falling back to `~/.config`
+    /// `$XDG_CONFIG_HOME/kuterm/settings.jsonc`, falling back to `~/.config`
     pub fn path() -> Option<PathBuf> {
         // xdg says empty or relative values must be ignored
         let config_dir = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .filter(|dir| dir.is_absolute())
             .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-        Some(config_dir.join("gpuz_term").join("settings.jsonc"))
+        Some(config_dir.join("kuterm").join("settings.jsonc"))
     }
 
     /// parse settings, we allow comments and trailing commas
@@ -171,7 +171,7 @@ pub(crate) mod tests {
 
     /// fresh temp dir unique to this test process
     pub(crate) fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("gpuz_term_{name}_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kuterm_{name}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -385,7 +385,7 @@ pub(crate) mod tests {
     fn load_creates_and_reads_settings_file() {
         let dir = temp_dir("settings_load");
         with_config_home(&dir, || {
-            let path = dir.join("gpuz_term").join("settings.jsonc");
+            let path = dir.join("kuterm").join("settings.jsonc");
             assert_eq!(Settings::path(), Some(path.clone()));
 
             // missing file is created from the bundled one

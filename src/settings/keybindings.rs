@@ -160,7 +160,7 @@ mod tests {
         let dir = temp_dir("keybindings_load");
         with_config_home(&dir, || {
             let path = Keybindings::path().unwrap();
-            assert_eq!(path, dir.join("gpuz_term/keybindings.jsonc"));
+            assert_eq!(path, dir.join("kuterm/keybindings.jsonc"));
             assert_eq!(Keybindings::load(), Keybindings::default());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), DEFAULT_KEYBINDINGS);
 
