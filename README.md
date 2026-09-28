@@ -1,12 +1,12 @@
-<img src="assets/logo/logo.png" alt="gpuz_term logo" width="128" align="left">
-
-# gpuz_term
+<img src="assets/logo/logo.png" alt="gpuz_term logo" width="128" align="right">
 
 [![Test](https://github.com/roworu/gpuz_term/actions/workflows/test.yml/badge.svg)](https://github.com/roworu/gpuz_term/actions/workflows/test.yml)
 [![Release](https://github.com/roworu/gpuz_term/actions/workflows/release.yml/badge.svg)](https://github.com/roworu/gpuz_term/actions/workflows/release.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/roworu/gpuz_term/badge)](https://scorecard.dev/viewer/?uri=github.com/roworu/gpuz_term)
 
 highly configurable, gpu accelerated terminal
+
+<br clear="right">
 
 ## installation
 
