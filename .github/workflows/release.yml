@@ -60,10 +60,28 @@ jobs:
           cp target/${{ matrix.target }}/release/gpuz_term.exe "$name/"
           7z a "$name.zip" "$name"
         else
+          strip target/${{ matrix.target }}/release/gpuz_term
           cp target/${{ matrix.target }}/release/gpuz_term "$name/"
-          strip "$name/gpuz_term"
           tar -czf "$name.tar.gz" "$name"
         fi
+
+    - name: Package deb, rpm, appimage
+      if: runner.os == 'Linux'
+      run: |
+        name=gpuz_term-${GITHUB_REF_NAME}-${{ matrix.name }}
+        version=${GITHUB_REF_NAME#v}
+        cargo install --locked cargo-deb cargo-generate-rpm
+        cargo deb --no-build --no-strip --target ${{ matrix.target }} --deb-version "$version" -o "$name.deb"
+        cargo generate-rpm --target ${{ matrix.target }} --set-metadata "version = \"$version\"" -o "$name.rpm"
+
+        curl -fsSLo linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+        chmod +x linuxdeploy
+        cp assets/logo/icon_256.png gpuz_term.png
+        APPIMAGE_EXTRACT_AND_RUN=1 OUTPUT="$name.AppImage" ./linuxdeploy --appdir AppDir \
+          -e target/${{ matrix.target }}/release/gpuz_term \
+          -d assets/gpuz_term.desktop \
+          -i gpuz_term.png \
+          --output appimage
 
     - uses: actions/upload-artifact@v7
       with:
@@ -71,6 +89,9 @@ jobs:
         path: |
           gpuz_term-*.tar.gz
           gpuz_term-*.zip
+          gpuz_term-*.deb
+          gpuz_term-*.rpm
+          gpuz_term-*.AppImage
 
   publish:
 

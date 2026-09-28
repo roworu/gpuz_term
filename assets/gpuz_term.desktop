@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=gpuz_term
+GenericName=Terminal
+Comment=highly configurable, gpu accelerated terminal
+TryExec=gpuz_term
+Exec=gpuz_term
+Icon=gpuz_term
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;console;shell;command;command-line;cli;prompt;bash;sh;zsh;fish;tty;pty;
+StartupWMClass=gpuz_term
+Actions=NewWindow;
+
+[Desktop Action NewWindow]
+Name=Open New Window
+Exec=gpuz_term
