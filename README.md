@@ -1,3 +1,5 @@
+<img src="assets/logo/logo.png" alt="gpuz_term logo" width="128" align="right">
+
 # gpuz_term
 
 [![Test](https://github.com/roworu/gpuz_term/actions/workflows/test.yml/badge.svg)](https://github.com/roworu/gpuz_term/actions/workflows/test.yml)
