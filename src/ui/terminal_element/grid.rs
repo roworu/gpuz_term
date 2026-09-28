@@ -188,13 +188,18 @@ fn cell_style(cell: &Cell, fg: Color, font: &Font, theme: &Theme) -> TextRun {
     } else {
         theme.convert_color(&fg)
     };
+    // gpui's underline shader applies alpha twice, so pass its square root to match the text
+    let line_color = Hsla {
+        a: color.a.sqrt(),
+        ..color
+    };
     let underline = cell.flags.intersects(Flags::ALL_UNDERLINES).then(|| UnderlineStyle {
-        color: Some(color),
+        color: Some(line_color),
         thickness: px(1.),
         wavy: cell.flags.contains(Flags::UNDERCURL),
     });
     let strikethrough = cell.flags.contains(Flags::STRIKEOUT).then(|| StrikethroughStyle {
-        color: Some(color),
+        color: Some(line_color),
         thickness: px(1.),
     });
     let font = Font {
