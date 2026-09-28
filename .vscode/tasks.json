@@ -17,7 +17,7 @@
     {
       // run build made by podman
       "label": "run app",
-      "command": "./target/podman/debug/gpuz_term",
+      "command": "./target/podman/debug/kuterm",
       "cwd": "${workspaceFolder}",
       "save": "all",
       "useNewTerminal": false,

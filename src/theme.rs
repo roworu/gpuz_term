@@ -258,7 +258,7 @@ mod tests {
             light: light.map(PathBuf::from),
         };
         let dir = temp_dir("theme_load");
-        let config = dir.join("gpuz_term");
+        let config = dir.join("kuterm");
         std::fs::create_dir_all(config.join("themes")).unwrap();
         with_config_home(&dir, || {
             let none = settings(None, None);
