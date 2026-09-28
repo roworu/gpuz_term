@@ -1,4 +1,4 @@
-<img src="assets/logo/logo.png" alt="gpuz_term logo" width="128" align="right">
+<img src="assets/logo/logo.png" alt="gpuz_term logo" width="128" align="left">
 
 # gpuz_term
 
