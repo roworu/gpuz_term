@@ -3,6 +3,7 @@
 use alacritty_terminal::{
     Term,
     index::Point as AlacPoint,
+    selection::SelectionRange,
     term::{RenderableCursor, TermMode, cell::Cell},
 };
 
@@ -13,9 +14,11 @@ pub struct IndexedCell {
     pub cell: Cell,
 }
 
-/// snapshot of grid, taken once per frame in `sync`
+/// snapshot of grid, refreshed by `sync` when the grid changed
 pub struct Content {
     pub cells: Vec<IndexedCell>,
+    /// selected range in grid coordinates, same as `IndexedCell::point`
+    pub selection: Option<SelectionRange>,
     pub mode: TermMode,
     pub display_offset: usize,
     pub cursor: RenderableCursor,
@@ -27,6 +30,7 @@ impl Default for Content {
     fn default() -> Self {
         Content {
             cells: Vec::new(),
+            selection: None,
             mode: TermMode::empty(),
             display_offset: 0,
             cursor: RenderableCursor {
@@ -39,21 +43,20 @@ impl Default for Content {
     }
 }
 
-pub(super) fn make_content(term: &Term<ZedListener>, terminal_bounds: TerminalBounds) -> Content {
-    let content = term.renderable_content();
-    let cells = content
-        .display_iter
-        .map(|indexed| IndexedCell {
-            point: indexed.point,
-            cell: indexed.cell.clone(),
-        })
-        .collect();
-    Content {
-        cells,
-        mode: content.mode,
-        display_offset: content.display_offset,
-        cursor: content.cursor,
-        cursor_char: term.grid()[content.cursor.point].c,
-        terminal_bounds,
+impl Content {
+    /// copy visible grid from `term`, reusing the cell buffer so steady redraws don't allocate
+    pub(super) fn refresh(&mut self, term: &Term<ZedListener>) {
+        let content = term.renderable_content();
+        self.cells.clear();
+        self.cells
+            .extend(content.display_iter.map(|indexed| IndexedCell {
+                point: indexed.point,
+                cell: indexed.cell.clone(),
+            }));
+        self.selection = content.selection;
+        self.mode = content.mode;
+        self.display_offset = content.display_offset;
+        self.cursor = content.cursor;
+        self.cursor_char = term.grid()[content.cursor.point].c;
     }
 }

@@ -17,6 +17,8 @@
   "terminal_background": "#282c34",
   "terminal_foreground": "#abb2bf",
   "cursor": "#74ade8",
+  // background of text selected with the mouse
+  "selection": "#3e4451",
   "bright_foreground": "#dce0e5",
   "dim_foreground": "#636d83",
 

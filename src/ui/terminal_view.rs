@@ -1,9 +1,10 @@
 //! focusable view around terminal
 
+use alacritty_terminal::selection::SelectionType;
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
-    ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent, Styled, Subscription, Window,
-    actions, div, px,
+    App, ClipboardItem, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
+    KeyDownEvent, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Render, ScrollDelta,
+    ScrollWheelEvent, Styled, Subscription, Window, actions, div, px,
 };
 
 use crate::{
@@ -11,7 +12,7 @@ use crate::{
     ui::terminal_element::TerminalElement,
 };
 
-actions!(terminal, [Paste]);
+actions!(terminal, [Copy, Paste]);
 
 // default terminal scroll_multiplier
 const SCROLL_MULTIPLIER: f32 = 2.;
@@ -20,6 +21,8 @@ pub struct TerminalView {
     terminal: Entity<Terminal>,
     focus_handle: FocusHandle,
     scroll_px: Pixels,
+    /// left button went down inside the terminal and is still held
+    selecting: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -46,6 +49,7 @@ impl TerminalView {
             terminal,
             focus_handle,
             scroll_px: px(0.),
+            selecting: false,
             _subscriptions: subscriptions,
         }
     }
@@ -99,6 +103,44 @@ impl TerminalView {
         }
     }
 
+    /// single click starts a selection, double selects words, triple lines, shift extends
+    pub fn mouse_down(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        let ty = match event.click_count {
+            0 | 1 => SelectionType::Simple,
+            2 => SelectionType::Semantic,
+            _ => SelectionType::Lines,
+        };
+        self.terminal.update(cx, |term, _| {
+            if event.modifiers.shift && ty == SelectionType::Simple {
+                term.extend_selection(event.position);
+            } else {
+                term.start_selection(event.position, ty);
+            }
+        });
+        self.selecting = true;
+        cx.notify();
+    }
+
+    /// extend the selection while the button is held, even outside the terminal area
+    pub fn mouse_drag(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if self.selecting {
+            self.terminal
+                .update(cx, |term, _| term.extend_selection(event.position));
+            cx.notify();
+        }
+    }
+
+    /// finish the drag, the selection stays until the next click or input
+    pub fn mouse_up(&mut self, _: &mut Context<Self>) {
+        self.selecting = false;
+    }
+
+    fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = self.terminal.read(cx).selection_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             self.terminal.update(cx, |term, _| term.paste(&text));
@@ -120,6 +162,7 @@ impl Render for TerminalView {
             .size_full()
             .track_focus(&self.focus_handle)
             .key_context("Terminal")
+            .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
             .on_key_down(cx.listener(Self::key_down))
             .on_scroll_wheel(cx.listener(Self::scroll_wheel))

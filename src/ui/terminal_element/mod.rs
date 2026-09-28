@@ -6,9 +6,10 @@ mod input_handler;
 
 use alacritty_terminal::vte::ansi::CursorShape;
 use gpui::{
-    App, Bounds, ContentMask, Element, ElementId, Entity, FocusHandle, Font, FontFeatures,
-    FontStyle, FontWeight, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels,
-    Style, TextRun, Window, fill, point, px, relative, size,
+    App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, Entity, FocusHandle,
+    Font, FontFeatures, FontStyle, FontWeight, GlobalElementId, Hitbox, HitboxBehavior,
+    InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Style, TextRun, Window, fill, point, px, relative, size,
 };
 
 use crate::{
@@ -23,6 +24,7 @@ use input_handler::TerminalInputHandler;
 
 /// everything computed in prepaint that paint needs
 pub struct LayoutState {
+    hitbox: Hitbox,
     rects: Vec<LayoutRect>,
     batched_text_runs: Vec<BatchedTextRun>,
     cursor: Option<CursorLayout>,
@@ -51,6 +53,31 @@ impl TerminalElement {
             focus,
             focused,
         }
+    }
+
+    // window level listeners, so a drag keeps selecting after leaving the terminal area
+    fn register_mouse_listeners(&self, hitbox: Hitbox, window: &mut Window) {
+        let view = self.terminal_view.clone();
+        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble
+                && event.button == MouseButton::Left
+                && hitbox.is_hovered(window)
+            {
+                view.update(cx, |view, cx| view.mouse_down(event, cx));
+            }
+        });
+        let view = self.terminal_view.clone();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+            if phase == DispatchPhase::Bubble && event.pressed_button == Some(MouseButton::Left) {
+                view.update(cx, |view, cx| view.mouse_drag(event, cx));
+            }
+        });
+        let view = self.terminal_view.clone();
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+            if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
+                view.update(cx, |view, cx| view.mouse_up(cx));
+            }
+        });
     }
 
     fn text_font(family: &str) -> Font {
@@ -128,8 +155,13 @@ impl Element for TerminalElement {
 
         let theme = Theme::get(cx);
         let content = &self.terminal.read(cx).last_content;
-        let (rects, batched_text_runs) =
-            layout_grid(&content.cells, content.display_offset, &font, theme);
+        let (rects, batched_text_runs) = layout_grid(
+            &content.cells,
+            content.display_offset,
+            content.selection,
+            &font,
+            theme,
+        );
 
         let cursor_line = content.cursor.point.line.0 + content.display_offset as i32;
         let cursor = (content.cursor.shape != CursorShape::Hidden
@@ -172,6 +204,7 @@ impl Element for TerminalElement {
         });
 
         LayoutState {
+            hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
             rects,
             batched_text_runs,
             cursor,
@@ -190,6 +223,9 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        window.set_cursor_style(CursorStyle::IBeam, &layout.hitbox);
+        self.register_mouse_listeners(layout.hitbox.clone(), window);
+
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             window.paint_quad(fill(bounds, Theme::get(cx).terminal_background));
 

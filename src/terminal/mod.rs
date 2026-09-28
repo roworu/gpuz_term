@@ -6,8 +6,15 @@ mod content;
 mod events;
 mod keys;
 mod process;
+mod selection;
 
-use std::{borrow::Cow, sync::Arc};
+use std::{
+    borrow::Cow,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use alacritty_terminal::{
     Term,
@@ -25,7 +32,6 @@ pub use content::{Content, IndexedCell};
 pub use process::foreground_process;
 
 use builder::ZedListener;
-use content::make_content;
 use keys::to_esc_str;
 
 /// events emitted to terminal view
@@ -46,6 +52,8 @@ pub struct Terminal {
     term: Arc<FairMutex<Term<ZedListener>>>,
     events: Vec<InternalEvent>,
     pub last_content: Content,
+    /// set by alacritty on new pty output and by local selection changes
+    dirty: Arc<AtomicBool>,
     title: String,
     /// pid of the shell running in the pty
     pub shell_pid: u32,
@@ -67,8 +75,9 @@ impl Terminal {
         self.pty_tx.notify(input.into());
     }
 
-    /// send user input and jump back to bottom of scrollback
+    /// send user input, dropping any selection and jumping back to bottom of scrollback
     pub fn input(&mut self, input: impl Into<Cow<'static, [u8]>>) {
+        self.clear_selection();
         self.events.push(InternalEvent::Scroll(Scroll::Bottom));
         self.write_to_pty(input);
     }
@@ -119,8 +128,13 @@ impl Terminal {
         }
     }
 
-    /// apply queued events and take a fresh snapshot of grid
+    /// apply queued events and refresh the grid snapshot if anything changed
     pub fn sync(&mut self) {
+        // many frames are repaints for focus or tab changes, skip the copy for those
+        let dirty = self.dirty.swap(false, Ordering::Acquire);
+        if !dirty && self.events.is_empty() {
+            return;
+        }
         let term = self.term.clone();
         let mut term = term.lock_unfair();
         for event in self.events.drain(..) {
@@ -132,7 +146,7 @@ impl Terminal {
                 InternalEvent::Scroll(scroll) => term.scroll_display(scroll),
             }
         }
-        self.last_content = make_content(&term, self.last_content.terminal_bounds);
+        self.last_content.refresh(&term);
     }
 }
 
@@ -157,7 +171,7 @@ mod tests {
     };
     use crate::settings::{CursorShape, Shell, TerminalSettings};
 
-    fn spawn(settings: &TerminalSettings) -> TerminalBuilder {
+    pub(super) fn spawn(settings: &TerminalSettings) -> TerminalBuilder {
         let mut builder = TerminalBuilder::new(settings, 0).expect("failed to spawn shell");
         // 80x24 grid, a real window would size it in prepaint
         builder.terminal.set_size(TerminalBounds::new(
@@ -169,7 +183,7 @@ mod tests {
         builder
     }
 
-    fn screen_text(terminal: &Terminal) -> String {
+    pub(super) fn screen_text(terminal: &Terminal) -> String {
         let mut text = String::new();
         let mut last_line = None;
         for indexed in &terminal.last_content.cells {
@@ -182,7 +196,7 @@ mod tests {
         text
     }
 
-    fn wait_for_text(terminal: &mut Terminal, needle: &str) {
+    pub(super) fn wait_for_text(terminal: &mut Terminal, needle: &str) {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             terminal.sync();
@@ -292,5 +306,38 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    #[test]
+    fn sync_skips_unchanged_grid_and_reuses_cell_buffer() {
+        let settings = TerminalSettings {
+            shell: Shell::WithArguments {
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), "echo quiet_ready; sleep 5".into()],
+            },
+            ..TerminalSettings::default()
+        };
+        let mut builder = spawn(&settings);
+        let terminal = &mut builder.terminal;
+        wait_for_text(terminal, "quiet_ready");
+        // let the last wakeup land, nothing prints after that
+        std::thread::sleep(Duration::from_millis(200));
+        terminal.sync();
+
+        let buffer = terminal.last_content.cells.as_ptr();
+        // a clean sync must leave the snapshot alone, so a wiped one stays wiped
+        let cells = std::mem::take(&mut terminal.last_content.cells);
+        terminal.sync();
+        assert!(
+            terminal.last_content.cells.is_empty(),
+            "clean sync copied the grid"
+        );
+
+        // a local change marks it dirty and the old buffer is filled again in place
+        terminal.last_content.cells = cells;
+        terminal.scroll(1);
+        terminal.sync();
+        assert!(screen_text(terminal).contains("quiet_ready"));
+        assert_eq!(terminal.last_content.cells.as_ptr(), buffer);
     }
 }

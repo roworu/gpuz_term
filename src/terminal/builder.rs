@@ -1,6 +1,13 @@
 //! spawning shell and pumping alacritty's events into terminal
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use alacritty_terminal::{
     Term,
@@ -24,11 +31,19 @@ use crate::settings::{Shell, TerminalSettings};
 const DEFAULT_SCROLL_HISTORY_LINES: usize = 10_000;
 
 #[derive(Clone)]
-pub(super) struct ZedListener(UnboundedSender<AlacTermEvent>);
+pub(super) struct ZedListener {
+    events: UnboundedSender<AlacTermEvent>,
+    /// shared with `Terminal`, lets `sync` skip snapshots while the grid is unchanged
+    dirty: Arc<AtomicBool>,
+}
 
 impl EventListener for ZedListener {
     fn send_event(&self, event: AlacTermEvent) {
-        self.0.unbounded_send(event).ok();
+        // set before the event is queued, so the redraw it triggers always sees the flag
+        if matches!(event, AlacTermEvent::Wakeup) {
+            self.dirty.store(true, Ordering::Release);
+        }
+        self.events.unbounded_send(event).ok();
     }
 }
 
@@ -77,11 +92,12 @@ impl TerminalBuilder {
 
         // alacritty's event loop talks to us with that channel
         let (events_tx, events_rx) = unbounded();
-        let term = Term::new(
-            config,
-            &TerminalBounds::default(),
-            ZedListener(events_tx.clone()),
-        );
+        let dirty = Arc::new(AtomicBool::new(true));
+        let listener = ZedListener {
+            events: events_tx,
+            dirty: dirty.clone(),
+        };
+        let term = Term::new(config, &TerminalBounds::default(), listener.clone());
         let term = Arc::new(FairMutex::new(term));
 
         let pty = tty::new(&pty_options, TerminalBounds::default().into(), window_id)
@@ -93,7 +109,7 @@ impl TerminalBuilder {
 
         let event_loop = EventLoop::new(
             term.clone(),
-            ZedListener(events_tx),
+            listener,
             pty,
             pty_options.drain_on_exit,
             false,
@@ -107,6 +123,7 @@ impl TerminalBuilder {
             term,
             events: Vec::new(),
             last_content: Content::default(),
+            dirty,
             title: String::new(),
             shell_pid,
             _event_loop_task: Task::ready(()),

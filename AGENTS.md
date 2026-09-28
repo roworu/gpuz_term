@@ -33,7 +33,8 @@ CI also runs `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`
 - `src/terminal/`: terminal model, no ui.
   - `TerminalBuilder::new` spawns shell in a pty.
   - `subscribe` moves it into a gpui `Entity<Terminal>` and pumps alacritty events (`events.rs`).
-  - `Terminal::sync` snapshots grid into `last_content` (`content.rs`), which is all renderer reads.
+  - `Terminal::sync` snapshots grid into `last_content` (`content.rs`), which is all renderer reads. it only copies when alacritty reported new output (a `Wakeup` sets a shared dirty flag) or a local change was queued, and reuses the cell buffer.
+  - `selection.rs` maps mouse positions to grid points; the selection lives in alacritty's `Term`, so it follows scrollback.
   - `keys.rs` maps keystrokes to escape sequences.
 
 - `src/settings/` and `src/theme.rs`: gpui globals read with `Settings::get(cx)` / `Theme::get(cx)`.

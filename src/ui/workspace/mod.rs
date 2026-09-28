@@ -273,7 +273,10 @@ mod tests {
     use std::{path::PathBuf, time::Instant};
 
     use alacritty_terminal::term::TermMode;
-    use gpui::{TestAppContext, VisualTestContext};
+    use gpui::{
+        Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+        TestAppContext, VisualTestContext, point,
+    };
 
     use super::*;
     use crate::{settings::Keybindings, terminal::Terminal};
@@ -563,5 +566,147 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[gpui::test]
+    fn plain_ctrl_w_and_ctrl_t_reach_the_shell(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        let r = reader(&ws, cx, false, "ctrl_keys");
+        cx.simulate_keystrokes("ctrl-w ctrl-t");
+        pump(cx);
+        assert_eq!(views(&ws, cx).len(), 2, "a shell key changed the tabs");
+        assert_eq!(finish(&ws, cx, r), ["17", "14"]);
+    }
+
+    #[gpui::test]
+    fn ctrl_shift_t_and_ctrl_shift_w_manage_tabs(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        keys(&ws, cx, "ctrl-shift-t");
+        assert_eq!(views(&ws, cx).len(), 2);
+        keys(&ws, cx, "ctrl-shift-w");
+        assert_eq!(views(&ws, cx).len(), 1);
+    }
+
+    /// screen line that starts with `text`
+    fn line_starting_with(terminal: &Terminal, text: &str) -> Option<usize> {
+        let mut lines: Vec<String> = Vec::new();
+        for indexed in &terminal.last_content.cells {
+            if indexed.point.column.0 == 0 {
+                lines.push(String::new());
+            }
+            lines.last_mut()?.push(indexed.cell.c);
+        }
+        lines.iter().position(|line| line.starts_with(text))
+    }
+
+    /// window position inside `column` of the screen line that starts with `text`, in the
+    /// cell's left or right half
+    fn cell_of(
+        ws: &Entity<Workspace>,
+        cx: &mut VisualTestContext,
+        text: &str,
+        column: usize,
+        right: bool,
+    ) -> Point<Pixels> {
+        let x = column as f32 + if right { 0.8 } else { 0.2 };
+        let ix = current(ws, cx);
+        terminal(ws, cx, ix).read_with(cx, |t, _| {
+            let line = line_starting_with(t, text)
+                .unwrap_or_else(|| panic!("no line starts with {text:?}"));
+            let b = t.last_content.terminal_bounds;
+            point(
+                b.bounds.origin.x + b.cell_width * x,
+                b.bounds.origin.y + b.line_height * (line as f32 + 0.5),
+            )
+        })
+    }
+
+    fn print_line(ws: &Entity<Workspace>, cx: &mut VisualTestContext, text: &str) {
+        let ix = current(ws, cx);
+        // split with %s so only the output, not the typed command, starts with `text`
+        let (head, tail) = text.split_at(2);
+        send_to(
+            ws,
+            cx,
+            ix,
+            &format!("clear; printf '{head}%s\\n' '{tail}'\r"),
+        );
+        let terminal = terminal(ws, cx, ix);
+        wait_until(cx, "text never printed", |cx| {
+            terminal.read_with(cx, |t, _| line_starting_with(t, text).is_some())
+        });
+    }
+
+    fn click(cx: &mut VisualTestContext, position: Point<Pixels>, click_count: usize) {
+        cx.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count,
+            first_mouse: false,
+        });
+    }
+
+    fn release(cx: &mut VisualTestContext, position: Point<Pixels>) {
+        cx.simulate_event(MouseUpEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+        });
+    }
+
+    fn clipboard(cx: &mut VisualTestContext) -> Option<String> {
+        cx.read_from_clipboard().and_then(|item| item.text())
+    }
+
+    #[gpui::test]
+    fn mouse_drag_selects_and_ctrl_shift_c_copies(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        print_line(&ws, cx, "pick these words");
+
+        let start = cell_of(&ws, cx, "pick these words", 5, false);
+        let end = cell_of(&ws, cx, "pick these words", 9, true);
+        click(cx, start, 1);
+        cx.simulate_event(MouseMoveEvent {
+            position: end,
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        });
+        release(cx, end);
+        cx.simulate_keystrokes("ctrl-shift-c");
+        assert_eq!(clipboard(cx).as_deref(), Some("these"));
+
+        // a move without the button held does not change the selection
+        let hover = cell_of(&ws, cx, "pick these words", 14, true);
+        cx.simulate_event(MouseMoveEvent {
+            position: hover,
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        });
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(String::new()));
+        cx.simulate_keystrokes("ctrl-shift-c");
+        assert_eq!(clipboard(cx).as_deref(), Some("these"));
+    }
+
+    #[gpui::test]
+    fn double_click_copies_a_word(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        print_line(&ws, cx, "pick these words");
+        let position = cell_of(&ws, cx, "pick these words", 12, false);
+        click(cx, position, 1);
+        release(cx, position);
+        click(cx, position, 2);
+        release(cx, position);
+        cx.simulate_keystrokes("ctrl-shift-c");
+        assert_eq!(clipboard(cx).as_deref(), Some("words"));
+    }
+
+    #[gpui::test]
+    fn copy_without_selection_keeps_clipboard(cx: &mut TestAppContext) {
+        let (_ws, cx) = open(cx, 1);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("before".into()));
+        cx.simulate_keystrokes("ctrl-shift-c");
+        assert_eq!(clipboard(cx).as_deref(), Some("before"));
     }
 }
