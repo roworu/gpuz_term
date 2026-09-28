@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json_lenient::Value;
 
 pub use keybindings::Keybindings;
-pub use options::{CursorShape, LineHeight, Shell, TabTitleAlign, TabTitleBlock, ThemeMode};
+pub use options::{CursorShape, LineHeight, NewTabButton, Shell, TabTitleAlign, TabTitleBlock, ThemeMode};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Settings {
@@ -21,6 +21,7 @@ pub struct Settings {
     pub tab_width: u32,
     pub tab_title: Vec<TabTitleBlock>,
     pub tab_title_align: TabTitleAlign,
+    pub new_tab_button: NewTabButton,
     pub window_title: Vec<TabTitleBlock>,
     pub default_title: String,
     pub theme: ThemeSettings,

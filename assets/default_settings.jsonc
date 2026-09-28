@@ -30,6 +30,8 @@
   "tab_title": ["folder", { "text": " - " }, "command"],
   // where the title sits inside its tab: "left", "center" or "right"
   "tab_title_align": "left",
+  // where the "+" new tab button sits: "left" or "right" end of the tab bar, or "after_tabs" next to the last tab
+  "new_tab_button": "after_tabs",
   // window title, built from the active tab with the same blocks as "tab_title"
   "window_title": ["folder", { "text": " - " }, "command"],
   // used by "title" when the running program set none, and as window title when it is empty

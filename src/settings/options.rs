@@ -88,3 +88,12 @@ pub enum TabTitleAlign {
     Center,
     Right,
 }
+
+/// where the new tab button sits in the tab bar
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NewTabButton {
+    Left,
+    Right,
+    AfterTabs,
+}

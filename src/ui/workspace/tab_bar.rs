@@ -7,7 +7,7 @@ use gpui::{
 
 use super::Workspace;
 use crate::{
-    settings::{Settings, TabTitleAlign},
+    settings::{NewTabButton, Settings, TabTitleAlign},
     theme::Theme,
 };
 
@@ -109,6 +109,21 @@ impl Render for Workspace {
         let tabs: Vec<_> = (0..self.tabs.len())
             .map(|ix| self.render_tab(ix, cx))
             .collect();
+        // fixed width tabs only take the room they need, so the button follows the last one.
+        // expanded tabs fill the row anyway, which puts the button at the right end
+        let hug_tabs = settings.new_tab_button == NewTabButton::AfterTabs && !settings.expand_tabs;
+        let tab_row = tab_row(&self.tab_scroll)
+            .when(hug_tabs, |row| row.flex_initial())
+            .children(tabs);
+        let new_tab = div()
+            .id("new-tab")
+            .flex()
+            .items_center()
+            .px_3()
+            .text_color(theme.text_muted)
+            .hover(|button| button.text_color(theme.text))
+            .child("+")
+            .on_click(cx.listener(|this, _, window, cx| this.add_tab(window, cx)));
         div()
             .key_context("Workspace")
             .on_action(cx.listener(Self::new_tab))
@@ -130,18 +145,10 @@ impl Render for Workspace {
                         .bg(theme.tab_bar_background)
                         .border_b_1()
                         .border_color(theme.border)
-                        .child(tab_row(&self.tab_scroll).children(tabs))
-                        .child(
-                            div()
-                                .id("new-tab")
-                                .flex()
-                                .items_center()
-                                .px_3()
-                                .text_color(theme.text_muted)
-                                .hover(|button| button.text_color(theme.text))
-                                .child("+")
-                                .on_click(cx.listener(|this, _, window, cx| this.add_tab(window, cx))),
-                        ),
+                        .map(|bar| match settings.new_tab_button {
+                            NewTabButton::Left => bar.child(new_tab).child(tab_row),
+                            NewTabButton::Right | NewTabButton::AfterTabs => bar.child(tab_row).child(new_tab),
+                        }),
                 )
             })
             .children(
