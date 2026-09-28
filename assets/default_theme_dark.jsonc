@@ -1,4 +1,4 @@
-// gpuz_term dark theme, one dark
+// kuterm dark theme, one dark
 //
 // created with default values on first launch, edit it to change colors.
 // its path is set in settings.jsonc under "theme" -> "dark".
@@ -17,6 +17,8 @@
   "terminal_background": "#282c34",
   "terminal_foreground": "#abb2bf",
   "cursor": "#74ade8",
+  // background of text selected with the mouse
+  "selection": "#3e4451",
   "bright_foreground": "#dce0e5",
   "dim_foreground": "#636d83",
 

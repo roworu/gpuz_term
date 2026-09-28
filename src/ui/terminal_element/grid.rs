@@ -1,6 +1,7 @@
 //! turns grid cells into background rects and batched text runs
 
 use alacritty_terminal::{
+    selection::SelectionRange,
     term::cell::{Cell, Flags},
     vte::ansi::{Color, NamedColor},
 };
@@ -94,6 +95,7 @@ impl LayoutRect {
 pub(super) fn layout_grid(
     cells: &[IndexedCell],
     display_offset: usize,
+    selection: Option<SelectionRange>,
     font: &Font,
     theme: &Theme,
 ) -> (Vec<LayoutRect>, Vec<BatchedTextRun>) {
@@ -110,8 +112,13 @@ pub(super) fn layout_grid(
             std::mem::swap(&mut fg, &mut bg);
         }
 
-        if !is_default_background(&bg) {
-            let color = theme.convert_color(&bg);
+        let selected = selection.is_some_and(|range| range.contains(indexed.point));
+        let background = if selected {
+            Some(theme.selection)
+        } else {
+            (!is_default_background(&bg)).then(|| theme.convert_color(&bg))
+        };
+        if let Some(color) = background {
             match rects.last_mut() {
                 Some(last)
                     if last.color == color
@@ -274,8 +281,12 @@ mod tests {
         assert!(same, "{what}: got {a:?}, want {b:?}");
     }
 
-    /// runs of a real 40x3 alacritty term after feeding it `bytes`
-    fn layout(bytes: &str, theme: &Theme) -> Vec<BatchedTextRun> {
+    /// rects and runs of a real 40x3 alacritty term after feeding it `bytes`
+    fn layout_with(
+        bytes: &str,
+        selection: Option<SelectionRange>,
+        theme: &Theme,
+    ) -> (Vec<LayoutRect>, Vec<BatchedTextRun>) {
         let mut term = Term::new(Config::default(), &TermSize::new(40, 3), VoidListener);
         let mut parser: Processor = Processor::new();
         parser.advance(&mut term, bytes.as_bytes());
@@ -287,7 +298,11 @@ mod tests {
                 cell: indexed.cell.clone(),
             })
             .collect();
-        layout_grid(&cells, 0, &font("Mono"), theme).1
+        layout_grid(&cells, 0, selection, &font("Mono"), theme)
+    }
+
+    fn layout(bytes: &str, theme: &Theme) -> Vec<BatchedTextRun> {
+        layout_with(bytes, None, theme).1
     }
 
     /// the text run that paints column `col` of line 0
@@ -362,6 +377,34 @@ mod tests {
             assert_eq!(line[1].text, "cd");
             assert_eq!(line[1].cell_count, 2);
             assert_color(line[1].style.color, theme.ansi_dim[1], name);
+        }
+    }
+
+    #[test]
+    fn selection_paints_its_cells_including_blanks() {
+        use alacritty_terminal::index::{Column, Line, Point as AlacPoint};
+
+        for (name, theme) in themes() {
+            // "ab" on red background, then blanks, selected from column 1 to 4
+            let range = SelectionRange::new(
+                AlacPoint::new(Line(0), Column(1)),
+                AlacPoint::new(Line(0), Column(4)),
+                false,
+            );
+            let (rects, runs) = layout_with("\x1b[41mab\x1b[0m", Some(range), &theme);
+            let line: Vec<_> = rects.iter().filter(|r| r.line == 0).collect();
+            assert_eq!(line.len(), 2, "{name}");
+            assert_eq!((line[0].column, line[0].num_of_cells), (0, 1));
+            assert_color(line[0].color, theme.ansi[1], name);
+            assert_eq!((line[1].column, line[1].num_of_cells), (1, 4));
+            assert_color(line[1].color, theme.selection, name);
+            // text keeps its color, only the background changes
+            assert_color(
+                run_at(&runs, 1).style.color,
+                theme.terminal_foreground,
+                name,
+            );
+            assert!(rects.iter().all(|r| r.line == 0), "{name}");
         }
     }
 }

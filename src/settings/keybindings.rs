@@ -8,7 +8,7 @@ use serde_json_lenient::Value;
 
 use super::{Settings, create_default_file, merge};
 use crate::ui::{
-    terminal_view::Paste,
+    terminal_view::{Copy, Paste},
     workspace::{ActivateTab, CloseTab, NewTab, NextTab},
 };
 
@@ -31,6 +31,7 @@ fn binding(action: &str, keys: &str) -> Option<KeyBinding> {
         "new_tab" => KeyBinding::new(keys, NewTab, None),
         "close_tab" => KeyBinding::new(keys, CloseTab, None),
         "next_tab" => KeyBinding::new(keys, NextTab, None),
+        "copy" => KeyBinding::new(keys, Copy, Some("Terminal")),
         "paste" => KeyBinding::new(keys, Paste, Some("Terminal")),
         _ => {
             let number: usize = action.strip_prefix("activate_tab_")?.parse().ok()?;
@@ -100,22 +101,42 @@ mod tests {
     #[test]
     fn defaults_bind_every_action() {
         let keys = Keybindings::default();
-        assert_eq!(keys.0["new_tab"].as_deref(), Some("ctrl-t"));
+        assert_eq!(keys.0["new_tab"].as_deref(), Some("ctrl-shift-t"));
+        assert_eq!(keys.0["close_tab"].as_deref(), Some("ctrl-shift-w"));
         assert_eq!(keys.0["next_tab"].as_deref(), Some("ctrl-tab"));
+        assert_eq!(keys.0["copy"].as_deref(), Some("ctrl-shift-c"));
         assert_eq!(keys.0["activate_tab_9"].as_deref(), Some("alt-9"));
-        assert_eq!(keys.bindings().len(), 13);
+        assert_eq!(keys.bindings().len(), 14);
+    }
+
+    #[test]
+    fn defaults_leave_plain_ctrl_letters_to_the_terminal() {
+        // ctrl-<letter> is a control character that shells and vim use (ctrl-w deletes a word,
+        // ctrl-t transposes), a binding would swallow it
+        for (action, keys) in &Keybindings::default().0 {
+            let Some(keys) = keys else { continue };
+            for key in keys.split_whitespace() {
+                let stroke = Keystroke::parse(key).unwrap();
+                let m = stroke.modifiers;
+                let plain_ctrl = m.control && !m.shift && !m.alt && !m.platform;
+                assert!(
+                    !(plain_ctrl && stroke.key.len() == 1),
+                    "{action} is bound to {key}, which the terminal needs"
+                );
+            }
+        }
     }
 
     #[test]
     fn partial_file_merges_and_null_disables() {
         let keys = Keybindings::parse(
-            r#"{"new_tab": "ctrl-shift-t", "close_tab": null, "activate_tab_10": "alt-0",}"#,
+            r#"{"new_tab": "ctrl-shift-n", "close_tab": null, "activate_tab_10": "alt-0",}"#,
         )
         .unwrap();
-        assert_eq!(keys.0["new_tab"].as_deref(), Some("ctrl-shift-t"));
+        assert_eq!(keys.0["new_tab"].as_deref(), Some("ctrl-shift-n"));
         assert_eq!(keys.0["close_tab"], None);
         assert_eq!(keys.0["paste"].as_deref(), Some("ctrl-shift-v"));
-        assert_eq!(keys.bindings().len(), 13);
+        assert_eq!(keys.bindings().len(), 14);
     }
 
     #[test]
@@ -139,7 +160,7 @@ mod tests {
         let dir = temp_dir("keybindings_load");
         with_config_home(&dir, || {
             let path = Keybindings::path().unwrap();
-            assert_eq!(path, dir.join("gpuz_term/keybindings.jsonc"));
+            assert_eq!(path, dir.join("kuterm/keybindings.jsonc"));
             assert_eq!(Keybindings::load(), Keybindings::default());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), DEFAULT_KEYBINDINGS);
 
@@ -166,7 +187,7 @@ mod tests {
     fn activate_tab_10_adds_a_binding_for_index_9() {
         let keys = Keybindings::parse(r#"{"activate_tab_10": "alt-0"}"#).unwrap();
         let bindings = keys.bindings();
-        assert_eq!(bindings.len(), 14);
+        assert_eq!(bindings.len(), 15);
         let strokes = |ix: usize| -> Vec<Keystroke> {
             let found: Vec<_> = bindings
                 .iter()
@@ -190,6 +211,7 @@ mod tests {
             "new_tab",
             "close_tab",
             "next_tab",
+            "copy",
             "paste",
             "activate_tab_1",
         ] {

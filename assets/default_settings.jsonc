@@ -1,4 +1,4 @@
-// gpuz_term settings
+// kuterm settings
 //
 // this file is created with default values on first launch.
 // comments and trailing commas are allowed, missing values use their defaults.
@@ -35,7 +35,7 @@
   // window title, built from the active tab with the same blocks as "tab_title"
   "window_title": ["folder", { "text": " - " }, "command"],
   // used by "title" when the running program set none, and as window title when it is empty
-  "default_title": "gpuz_term",
+  "default_title": "kuterm",
 
   "theme": {
     // which theme to use, applied right away when the system switches:

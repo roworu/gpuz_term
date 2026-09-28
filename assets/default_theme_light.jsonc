@@ -1,4 +1,4 @@
-// gpuz_term light theme, one light
+// kuterm light theme, one light
 //
 // created with default values on first launch, edit it to change colors.
 // its path is set in settings.jsonc under "theme" -> "light".
@@ -17,6 +17,8 @@
   "terminal_background": "#fafafa",
   "terminal_foreground": "#383a42",
   "cursor": "#526fff",
+  // background of text selected with the mouse
+  "selection": "#e5e5e6",
   "bright_foreground": "#202227",
   "dim_foreground": "#a0a1a7",
 

@@ -1,26 +1,26 @@
 [package]
-name = "gpuz_term"
-version = "0.0.3"
+name = "kuterm"
+version = "0.0.4"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "highly configurable, gpu accelerated terminal"
-repository = "https://github.com/roworu/gpuz_term"
+repository = "https://github.com/roworu/kuterm"
 authors = ["roworu"]
 publish = false
 
 [package.metadata.deb]
 section = "utils"
 assets = [
-    ["target/release/gpuz_term", "usr/bin/", "755"],
-    ["assets/gpuz_term.desktop", "usr/share/applications/", "644"],
-    ["assets/logo/icon_256.png", "usr/share/icons/hicolor/256x256/apps/gpuz_term.png", "644"],
+    ["target/release/kuterm", "usr/bin/", "755"],
+    ["assets/kuterm.desktop", "usr/share/applications/", "644"],
+    ["assets/logo/icon_256.png", "usr/share/icons/hicolor/256x256/apps/kuterm.png", "644"],
 ]
 
 [package.metadata.generate-rpm]
 assets = [
-    { source = "target/release/gpuz_term", dest = "/usr/bin/gpuz_term", mode = "755" },
-    { source = "assets/gpuz_term.desktop", dest = "/usr/share/applications/gpuz_term.desktop", mode = "644" },
-    { source = "assets/logo/icon_256.png", dest = "/usr/share/icons/hicolor/256x256/apps/gpuz_term.png", mode = "644" },
+    { source = "target/release/kuterm", dest = "/usr/bin/kuterm", mode = "755" },
+    { source = "assets/kuterm.desktop", dest = "/usr/share/applications/kuterm.desktop", mode = "644" },
+    { source = "assets/logo/icon_256.png", dest = "/usr/share/icons/hicolor/256x256/apps/kuterm.png", mode = "644" },
 ]
 
 [dependencies]

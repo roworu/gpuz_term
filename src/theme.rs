@@ -19,6 +19,7 @@ pub struct Theme {
     pub terminal_background: Hsla,
     pub terminal_foreground: Hsla,
     pub cursor: Hsla,
+    pub selection: Hsla,
     /// 8 normal colors followed by 8 bright colors
     pub ansi: [Hsla; 16],
     pub ansi_dim: [Hsla; 8],
@@ -257,7 +258,7 @@ mod tests {
             light: light.map(PathBuf::from),
         };
         let dir = temp_dir("theme_load");
-        let config = dir.join("gpuz_term");
+        let config = dir.join("kuterm");
         std::fs::create_dir_all(config.join("themes")).unwrap();
         with_config_home(&dir, || {
             let none = settings(None, None);

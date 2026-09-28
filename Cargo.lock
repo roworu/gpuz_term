@@ -2389,20 +2389,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpuz_term"
-version = "0.0.3"
-dependencies = [
- "alacritty_terminal",
- "anyhow",
- "futures",
- "gpui",
- "gpui_platform",
- "image",
- "serde",
- "serde_json_lenient",
-]
-
-[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2921,6 +2907,20 @@ dependencies = [
  "euclid",
  "polycool",
  "smallvec",
+]
+
+[[package]]
+name = "kuterm"
+version = "0.0.4"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "futures",
+ "gpui",
+ "gpui_platform",
+ "image",
+ "serde",
+ "serde_json_lenient",
 ]
 
 [[package]]

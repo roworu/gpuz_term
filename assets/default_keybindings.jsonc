@@ -1,9 +1,12 @@
-// gpuz_term keybindings
+// kuterm keybindings
 //
 // this file is created with default values on first launch.
 // comments and trailing commas are allowed, missing actions keep their default keys.
 // if this file is invalid, all defaults are used and an error is printed.
 // changes are applied on next launch.
+//
+// a bound key is never sent to the terminal, so defaults use ctrl-shift combinations that shells
+// and editors like vim don't rely on (ctrl-w, ctrl-t, ctrl-c... keep reaching them).
 //
 // each action maps to one key, written as modifiers and a key joined by "-":
 //   modifiers: "ctrl", "alt", "shift", "super" (windows / cmd key), "fn"
@@ -13,11 +16,13 @@
 //   null             - no key, the action is disabled
 {
   // open a new tab
-  "new_tab": "ctrl-t",
+  "new_tab": "ctrl-shift-t",
   // close the active tab
-  "close_tab": "ctrl-w",
+  "close_tab": "ctrl-shift-w",
   // switch to the tab on the right, wrapping around to the first one
   "next_tab": "ctrl-tab",
+  // copy text selected with the mouse to clipboard
+  "copy": "ctrl-shift-c",
   // paste from clipboard into the terminal
   "paste": "ctrl-shift-v",
   // switch to tab by its position, any "activate_tab_<n>" with n from 1 up can be added
