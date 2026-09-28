@@ -47,6 +47,10 @@ impl TerminalBuilder {
         env.insert("TERM".to_string(), "xterm-256color".to_string());
         env.insert("COLORTERM".to_string(), "truecolor".to_string());
         env.insert("TERM_PROGRAM".to_string(), "gpuz_term".to_string());
+        env.insert(
+            "TERM_PROGRAM_VERSION".to_string(),
+            env!("CARGO_PKG_VERSION").to_string(),
+        );
 
         let shell = match &settings.shell {
             Shell::System => None,

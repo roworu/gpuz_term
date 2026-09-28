@@ -1,3 +1,5 @@
+<img src="assets/logo/logo.png" alt="gpuz_term logo" width="128" align="right">
+
 # gpuz_term
 
 [![Test](https://github.com/roworu/gpuz_term/actions/workflows/test.yml/badge.svg)](https://github.com/roworu/gpuz_term/actions/workflows/test.yml)
@@ -31,8 +33,6 @@ partial changes work, missing values use defaults. you can just override things 
 you can check default settings used by terminal inside that repo: [Settings](https://github.com/roworu/gpuz_term/tree/main/assets)
 
 ## screenshots
-
-![single tab, light theme](assets/screenshots/1.png)
 
 ![tabs](assets/screenshots/2.png)
 

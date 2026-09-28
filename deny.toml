@@ -25,10 +25,6 @@ allow = [
     "bzip2-1.0.6",
 ]
 
-# gpuz_term itself has no license, it is marked publish = false
-[licenses.private]
-ignore = true
-
 [bans]
 multiple-versions = "allow"
 
