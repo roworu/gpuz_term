@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: [ "v*" ]
+    branches: [ "release/v*" ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -54,7 +54,7 @@ jobs:
 
     - name: Package
       run: |
-        name=gpuz_term-${GITHUB_REF_NAME}-${{ matrix.name }}
+        name=gpuz_term-${GITHUB_REF_NAME#release/}-${{ matrix.name }}
         mkdir "$name"
         if [ "$RUNNER_OS" = "Windows" ]; then
           cp target/${{ matrix.target }}/release/gpuz_term.exe "$name/"
@@ -68,8 +68,8 @@ jobs:
     - name: Package deb, rpm, appimage
       if: runner.os == 'Linux'
       run: |
-        name=gpuz_term-${GITHUB_REF_NAME}-${{ matrix.name }}
-        version=${GITHUB_REF_NAME#v}
+        name=gpuz_term-${GITHUB_REF_NAME#release/}-${{ matrix.name }}
+        version=${GITHUB_REF_NAME#release/v}
         cargo install --locked cargo-deb cargo-generate-rpm
         cargo deb --no-build --no-strip --target ${{ matrix.target }} --deb-version "$version" -o "$name.deb"
         cargo generate-rpm --target ${{ matrix.target }} --set-metadata "version = \"$version\"" -o "$name.rpm"
@@ -120,4 +120,4 @@ jobs:
     - name: Publish
       env:
         GH_TOKEN: ${{ github.token }}
-      run: gh release create "$GITHUB_REF_NAME" gpuz_term-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --generate-notes
+      run: gh release create "${GITHUB_REF_NAME#release/}" gpuz_term-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --generate-notes
