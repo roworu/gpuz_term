@@ -2,10 +2,8 @@ name: Test
 
 on:
   push:
-    branches: [ "main" ]
     paths-ignore: [ "**.md", "LICENSE" ]
   pull_request:
-    branches: [ "main" ]
     paths-ignore: [ "**.md", "LICENSE" ]
 
 env:
@@ -35,6 +33,9 @@ jobs:
           libasound2-dev libssl-dev libzstd-dev
           
     - uses: Swatinem/rust-cache@v2
+
+    - name: Add format and lint components
+      run: rustup component add rustfmt clippy
 
     - name: Format
       run: cargo fmt --check
@@ -103,7 +104,11 @@ jobs:
 
     - name: Scan for secrets
       run: |
-        curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar xz gitleaks
+        base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+        curl -fsSLo "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" "$base/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+        curl -fsSLo gitleaks_checksums.txt "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+        grep "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks_checksums.txt | sha256sum -c -
+        tar xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
         ./gitleaks git --redact --verbose
 
   codeql:

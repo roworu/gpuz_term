@@ -9,14 +9,53 @@ env:
   CARGO_TERM_COLOR: always
   RELEASE_REF: ${{ github.event.pull_request.head.ref }}
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
 jobs:
-  build:
+  check:
 
     # only publish after a release branch is merged into main, not when it is opened
     if: github.event.pull_request.merged && startsWith(github.event.pull_request.head.ref, 'release/v')
+
+    runs-on: ubuntu-26.04
+
+    steps:
+
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+
+    - name: Check branch version matches Cargo.toml
+      run: |
+        branch_version="${RELEASE_REF#release/v}"
+        package_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+        if [ "$branch_version" != "$package_version" ]; then
+          echo "::error::branch $RELEASE_REF has version $branch_version, but Cargo.toml has $package_version"
+          exit 1
+        fi
+
+    - name: Check release and tag do not exist yet
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        tag="${RELEASE_REF#release/}"
+        if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+          echo "::error::release $tag already exists, delete it before releasing"
+          exit 1
+        fi
+        if git ls-remote --tags origin "refs/tags/$tag" | grep -q .; then
+          echo "::error::tag $tag already exists, delete it before releasing"
+          exit 1
+        fi
+
+  build:
+
+    needs: check
 
     strategy:
       fail-fast: false
@@ -39,6 +78,8 @@ jobs:
       with:
         persist-credentials: false
 
+    - uses: Swatinem/rust-cache@v2
+
     - name: Install dependencies
       if: runner.os == 'Linux'
       run: |
@@ -49,10 +90,8 @@ jobs:
           libwayland-dev libx11-xcb-dev libxcb1-dev libvulkan-dev \
           libasound2-dev libssl-dev libzstd-dev
 
-    - name: Update rust
-      run: |
-        rustup update stable && rustup default stable
-        rustup target add ${{ matrix.target }}
+    - name: Add target
+      run: rustup target add ${{ matrix.target }}
 
     - name: Build
       run: cargo build --release --verbose --target ${{ matrix.target }}
@@ -79,7 +118,8 @@ jobs:
         cargo deb --no-build --no-strip --target ${{ matrix.target }} --deb-version "$version" -o "$name.deb"
         cargo generate-rpm --target ${{ matrix.target }} --set-metadata "version = \"$version\"" -o "$name.rpm"
 
-        curl -fsSLo linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+        curl -fsSLo linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage
+        echo "c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d  linuxdeploy" | sha256sum -c -
         chmod +x linuxdeploy
         cp assets/logo/icon_256.png kuterm.png
         APPIMAGE_EXTRACT_AND_RUN=1 OUTPUT="$name.AppImage" ./linuxdeploy --appdir AppDir \
