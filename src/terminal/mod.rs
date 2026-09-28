@@ -206,6 +206,18 @@ mod tests {
     }
 
     #[test]
+    fn term_program_version_is_own() {
+        let mut builder = spawn(&TerminalSettings::default());
+        builder
+            .terminal
+            .input(b"echo ver=$TERM_PROGRAM_VERSION=\r".to_vec());
+        wait_for_text(
+            &mut builder.terminal,
+            &format!("ver={}=", env!("CARGO_PKG_VERSION")),
+        );
+    }
+
+    #[test]
     fn configured_shell_is_launched() {
         let settings = TerminalSettings {
             shell: Shell::WithArguments {
