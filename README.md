@@ -32,8 +32,6 @@ you can check default settings used by terminal inside that repo: [Settings](htt
 
 ## screenshots
 
-![single tab, light theme](assets/screenshots/1.png)
-
 ![tabs](assets/screenshots/2.png)
 
 ![dark theme](assets/screenshots/3.png)
