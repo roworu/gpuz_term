@@ -96,11 +96,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gpuz_term_proc_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("we ird) (x 1 2");
-        std::fs::copy("/bin/sleep", &exe).unwrap();
+        std::fs::copy("/bin/bash", &exe).unwrap();
         // other tests fork while the copy's write fd is open, so exec may briefly fail with ETXTBSY
         let mut tries = 0;
         let child = loop {
-            match Command::new(&exe).arg("10").current_dir(&dir).spawn() {
+            match Command::new(&exe)
+                .args(["-c", "sleep 10; :"])
+                .current_dir(&dir)
+                .spawn()
+            {
                 Ok(child) => break Kill(child),
                 Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 100 => {
                     tries += 1;
