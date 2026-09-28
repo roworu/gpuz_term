@@ -5,9 +5,7 @@ mod ui;
 
 use std::borrow::Cow;
 
-use gpui::{
-    App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size,
-};
+use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 use gpui_platform::application;
 
 use crate::{
@@ -17,15 +15,20 @@ use crate::{
 };
 
 fn init(cx: &mut App) {
-    
     // 1) bundle jetbrains mono nerd font as binary
     let fonts: Vec<Cow<'static, [u8]>> = vec![
-
-      Cow::Borrowed(include_bytes!("../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-Bold.ttf")),
-      Cow::Borrowed(include_bytes!("../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-BoldItalic.ttf")),
-      Cow::Borrowed(include_bytes!("../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-Italic.ttf")),
-      Cow::Borrowed(include_bytes!("../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-Regular.ttf")),
-    
+        Cow::Borrowed(include_bytes!(
+            "../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-Bold.ttf"
+        )),
+        Cow::Borrowed(include_bytes!(
+            "../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-BoldItalic.ttf"
+        )),
+        Cow::Borrowed(include_bytes!(
+            "../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-Italic.ttf"
+        )),
+        Cow::Borrowed(include_bytes!(
+            "../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-Regular.ttf"
+        )),
     ];
     cx.text_system()
         .add_fonts(fonts)
@@ -33,16 +36,15 @@ fn init(cx: &mut App) {
 
     // 2) load settings
     cx.set_global(Settings::load());
-    
+
     // 3) apply theme
     Theme::apply(cx.window_appearance(), cx);
-    
+
     // 4) load keybindings
     cx.bind_keys(Keybindings::load().bindings());
 }
 
 fn main() {
-
     application().run(|cx: &mut App| {
         init(cx);
         cx.on_window_closed(|cx, _| cx.quit()).detach();

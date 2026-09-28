@@ -59,20 +59,30 @@ fn user_name() -> String {
 
 fn passwd_user() -> Option<String> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    let uid = status.lines().find_map(|line| line.strip_prefix("Uid:"))?.split_whitespace().next()?.to_owned();
-    std::fs::read_to_string("/etc/passwd").ok()?.lines().find_map(|line| {
-        let mut fields = line.split(':');
-        let name = fields.next()?;
-        (fields.nth(1)? == uid).then(|| name.to_owned())
-    })
+    let uid = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))?
+        .split_whitespace()
+        .next()?
+        .to_owned();
+    std::fs::read_to_string("/etc/passwd")
+        .ok()?
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split(':');
+            let name = fields.next()?;
+            (fields.nth(1)? == uid).then(|| name.to_owned())
+        })
 }
 
 fn folder_name(cwd: &Path) -> String {
     if std::env::var_os("HOME").is_some_and(|home| cwd == Path::new(&home)) {
         return "~".to_string();
     }
-    cwd.file_name()
-        .map_or_else(|| cwd.display().to_string(), |name| name.to_string_lossy().into_owned())
+    cwd.file_name().map_or_else(
+        || cwd.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
 }
 
 fn exec(command: &str, cwd: Option<&Path>) -> Option<String> {
@@ -103,8 +113,16 @@ fn exec(command: &str, cwd: Option<&Path>) -> Option<String> {
         std::thread::sleep(Duration::from_millis(10));
     }
     // background jobs of sh may still hold the pipe, so the reader is left to finish alone
-    let output = output_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).ok()?;
-    Some(String::from_utf8_lossy(&output).lines().next()?.trim().to_string())
+    let output = output_rx
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .ok()?;
+    Some(
+        String::from_utf8_lossy(&output)
+            .lines()
+            .next()?
+            .trim()
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -137,7 +155,10 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         let folder = cwd.file_name().unwrap().to_string_lossy().into_owned();
         assert_eq!(build(&[TabTitleBlock::Folder]), folder);
-        assert_eq!(build(&[TabTitleBlock::Exec("pwd".into())]), cwd.display().to_string());
+        assert_eq!(
+            build(&[TabTitleBlock::Exec("pwd".into())]),
+            cwd.display().to_string()
+        );
     }
 
     #[test]
@@ -162,7 +183,10 @@ mod tests {
         assert_eq!(build(&[TabTitleBlock::Exec("exit 1".into())]), "");
         let start = Instant::now();
         assert_eq!(build(&[TabTitleBlock::Exec("sleep 10".into())]), "");
-        assert_eq!(build(&[TabTitleBlock::Exec("echo hi; sleep 10 &".into())]), "");
+        assert_eq!(
+            build(&[TabTitleBlock::Exec("echo hi; sleep 10 &".into())]),
+            ""
+        );
         assert!(start.elapsed() < Duration::from_secs(8));
     }
 
@@ -170,8 +194,15 @@ mod tests {
     fn exec_timeout_is_bounded() {
         // output printed before the hang is dropped too
         let start = Instant::now();
-        assert_eq!(build(&[TabTitleBlock::Exec("echo early; sleep 10".into())]), "");
-        assert!(start.elapsed() < Duration::from_secs(4), "took {:?}", start.elapsed());
+        assert_eq!(
+            build(&[TabTitleBlock::Exec("echo early; sleep 10".into())]),
+            ""
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "took {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
@@ -179,6 +210,10 @@ mod tests {
         // sh exits right away but a background child keeps the pipe open, the title must not wait for it
         let start = Instant::now();
         let _ = build(&[TabTitleBlock::Exec("echo hi; sleep 8 &".into())]);
-        assert!(start.elapsed() < Duration::from_secs(4), "took {:?}", start.elapsed());
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "took {:?}",
+            start.elapsed()
+        );
     }
 }

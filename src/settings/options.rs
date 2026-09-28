@@ -10,7 +10,10 @@ pub enum Shell {
     /// the user's login shell from /etc/passwd
     System,
     Program(String),
-    WithArguments { program: String, args: Vec<String> },
+    WithArguments {
+        program: String,
+        args: Vec<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]

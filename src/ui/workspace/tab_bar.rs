@@ -1,9 +1,7 @@
 //! drawing the workspace: tab bar on top, active terminal below
 // TODO: need a setting on where to put tabs (top, bottom, left?, right?)
 
-use gpui::{
-    AnyElement, Context, Div, ScrollHandle, Stateful, Window, div, prelude::*, px, rems,
-};
+use gpui::{AnyElement, Context, Div, ScrollHandle, Stateful, Window, div, prelude::*, px, rems};
 
 use super::Workspace;
 use crate::{
@@ -38,7 +36,9 @@ fn tab(ix: usize, title: String, settings: &Settings) -> Stateful<Div> {
         // zero basis with flex_1 splits the row equally, whatever the titles are
         .when(expand, |tab| tab.flex_1().min_w_0())
         // keep their width and overflow the row instead of squeezing together
-        .when(!expand, |tab| tab.flex_none().w(px(settings.tab_width as f32)))
+        .when(!expand, |tab| {
+            tab.flex_none().w(px(settings.tab_width as f32))
+        })
         .child(
             div()
                 .flex()
@@ -68,7 +68,12 @@ impl Workspace {
         let tab_state = &self.tabs[ix];
         // the program title stands in until the first refresh, or when the blocks are empty
         let title = if tab_state.title.is_empty() {
-            tab_state.view.read(cx).terminal().read(cx).title(&Settings::get(cx).default_title)
+            tab_state
+                .view
+                .read(cx)
+                .terminal()
+                .read(cx)
+                .title(&Settings::get(cx).default_title)
         } else {
             tab_state.title.clone()
         };
@@ -77,7 +82,11 @@ impl Workspace {
             .border_r_1()
             .border_color(theme.border)
             .when(is_active, |tab| tab.bg(theme.tab_active_background))
-            .text_color(if is_active { theme.text } else { theme.text_muted })
+            .text_color(if is_active {
+                theme.text
+            } else {
+                theme.text_muted
+            })
             .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(ix, window, cx)))
             .child(
                 div()
@@ -147,7 +156,9 @@ impl Render for Workspace {
                         .border_color(theme.border)
                         .map(|bar| match settings.new_tab_button {
                             NewTabButton::Left => bar.child(new_tab).child(tab_row),
-                            NewTabButton::Right | NewTabButton::AfterTabs => bar.child(tab_row).child(new_tab),
+                            NewTabButton::Right | NewTabButton::AfterTabs => {
+                                bar.child(tab_row).child(new_tab)
+                            }
                         }),
                 )
             })
@@ -162,7 +173,8 @@ impl Render for Workspace {
 #[cfg(test)]
 mod tests {
     use gpui::{
-        Bounds, Pixels, ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext, point, size,
+        Bounds, Pixels, ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext, point,
+        size,
     };
 
     use super::*;
@@ -181,10 +193,13 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(ix, title)| tab(ix, title.clone(), &self.settings));
-            div()
-                .size_full()
-                .flex()
-                .child(div().flex().h(px(30.)).w(px(600.)).child(tab_row(&self.scroll).children(tabs)))
+            div().size_full().flex().child(
+                div()
+                    .flex()
+                    .h(px(30.))
+                    .w(px(600.))
+                    .child(tab_row(&self.scroll).children(tabs)),
+            )
         }
     }
 
@@ -277,7 +292,10 @@ mod tests {
         // 10 tabs of 90px overflow the 600px row
         let (row, cx) = layout(r#"{"expand_tabs": false, "tab_width": 90}"#, 10, cx);
         let tabs = tab_bounds(&row, cx);
-        assert!(tabs.last().unwrap().right() > px(600.), "tabs should overflow: {tabs:?}");
+        assert!(
+            tabs.last().unwrap().right() > px(600.),
+            "tabs should overflow: {tabs:?}"
+        );
         assert_eq!(scroll_down(&row, cx), px(-100.));
         // scrolling stops at the last tab
         for _ in 0..100 {

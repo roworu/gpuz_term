@@ -77,7 +77,12 @@ impl TerminalView {
     }
 
     fn scroll_wheel(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let line_height = self.terminal.read(cx).last_content.terminal_bounds.line_height;
+        let line_height = self
+            .terminal
+            .read(cx)
+            .last_content
+            .terminal_bounds
+            .line_height;
         let lines = match event.delta {
             ScrollDelta::Lines(delta) => (delta.y * SCROLL_MULTIPLIER) as i32,
             ScrollDelta::Pixels(delta) => {

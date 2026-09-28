@@ -44,7 +44,8 @@ impl InputHandler for TerminalInputHandler {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.terminal_view.update(cx, |view, cx| view.commit_text(text, cx));
+        self.terminal_view
+            .update(cx, |view, cx| view.commit_text(text, cx));
         window.invalidate_character_coordinates();
     }
 

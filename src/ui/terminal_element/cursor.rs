@@ -1,7 +1,9 @@
 //! painting cursor in each shape
 
 use alacritty_terminal::vte::ansi::CursorShape;
-use gpui::{App, Bounds, Pixels, Point, ShapedLine, TextAlign, Window, fill, outline, point, px, size};
+use gpui::{
+    App, Bounds, Pixels, Point, ShapedLine, TextAlign, Window, fill, outline, point, px, size,
+};
 
 use crate::theme::Theme;
 
@@ -20,15 +22,28 @@ impl CursorLayout {
             CursorShape::Block if self.focused => {
                 window.paint_quad(fill(bounds, color));
                 self.text
-                    .paint(bounds.origin, bounds.size.height, TextAlign::Left, None, window, cx)
+                    .paint(
+                        bounds.origin,
+                        bounds.size.height,
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    )
                     .ok();
             }
             CursorShape::Beam if self.focused => {
-                window.paint_quad(fill(Bounds::new(bounds.origin, size(px(2.), bounds.size.height)), color));
+                window.paint_quad(fill(
+                    Bounds::new(bounds.origin, size(px(2.), bounds.size.height)),
+                    color,
+                ));
             }
             CursorShape::Underline if self.focused => {
                 let origin = point(bounds.origin.x, bounds.bottom() - px(2.));
-                window.paint_quad(fill(Bounds::new(origin, size(bounds.size.width, px(2.))), color));
+                window.paint_quad(fill(
+                    Bounds::new(origin, size(bounds.size.width, px(2.))),
+                    color,
+                ));
             }
             // unfocused cursors are drawn hollow
             // TODO: do we need a settings here to change its begaviour?

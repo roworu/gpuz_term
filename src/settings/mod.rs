@@ -10,7 +10,9 @@ use serde::Deserialize;
 use serde_json_lenient::Value;
 
 pub use keybindings::Keybindings;
-pub use options::{CursorShape, LineHeight, NewTabButton, Shell, TabTitleAlign, TabTitleBlock, ThemeMode};
+pub use options::{
+    CursorShape, LineHeight, NewTabButton, Shell, TabTitleAlign, TabTitleBlock, ThemeMode,
+};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Settings {
@@ -30,7 +32,8 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        serde_json_lenient::from_str(DEFAULT_SETTINGS).expect("bundled default settings are invalid")
+        serde_json_lenient::from_str(DEFAULT_SETTINGS)
+            .expect("bundled default settings are invalid")
     }
 }
 
@@ -196,7 +199,10 @@ pub(crate) mod tests {
         assert_eq!(settings, Settings::default());
         assert_eq!(settings.ui_font_size, 16.);
         assert_eq!(settings.terminal.font_size, 16.);
-        assert_eq!(settings.terminal.font_family, "JetBrainsMonoNL Nerd Font Mono");
+        assert_eq!(
+            settings.terminal.font_family,
+            "JetBrainsMonoNL Nerd Font Mono"
+        );
         assert_eq!(settings.terminal.shell, Shell::System);
         assert_eq!(settings.terminal.line_height.value(), 1.3);
         assert_eq!(settings.terminal.cursor_shape, CursorShape::Bar);
@@ -205,7 +211,10 @@ pub(crate) mod tests {
     #[test]
     fn bundled_settings_are_commented_and_parse() {
         assert!(DEFAULT_SETTINGS.contains("//"));
-        assert_eq!(Settings::parse(DEFAULT_SETTINGS).unwrap(), Settings::default());
+        assert_eq!(
+            Settings::parse(DEFAULT_SETTINGS).unwrap(),
+            Settings::default()
+        );
     }
 
     #[test]
@@ -236,7 +245,10 @@ pub(crate) mod tests {
                 args: vec!["--login".into()],
             }
         );
-        assert_eq!(settings.terminal.font_family, "JetBrainsMonoNL Nerd Font Mono");
+        assert_eq!(
+            settings.terminal.font_family,
+            "JetBrainsMonoNL Nerd Font Mono"
+        );
         assert_eq!(settings.terminal.font_size, 16.0);
         assert_eq!(settings.terminal.line_height.value(), 2.);
         assert_eq!(settings.terminal.cursor_shape, CursorShape::Bar);
@@ -263,13 +275,17 @@ pub(crate) mod tests {
     #[test]
     fn partial_top_level_section_keeps_terminal_defaults() {
         let settings = Settings::parse(r#"{"ui_font_size": 12}"#).unwrap();
-        let expected = Settings { ui_font_size: 12., ..Settings::default() };
+        let expected = Settings {
+            ui_font_size: 12.,
+            ..Settings::default()
+        };
         assert_eq!(settings, expected);
     }
 
     #[test]
     fn unknown_keys_are_ignored() {
-        let settings = Settings::parse(r#"{"foo": 1, "terminal": {"bar": true, "font_size": 14}}"#).unwrap();
+        let settings =
+            Settings::parse(r#"{"foo": 1, "terminal": {"bar": true, "font_size": 14}}"#).unwrap();
         let mut expected = Settings::default();
         expected.terminal.font_size = 14.;
         assert_eq!(settings, expected);
@@ -296,8 +312,14 @@ pub(crate) mod tests {
         assert!(Settings::parse(r#"{"tab_title": ["unknown"]}"#).is_err());
         assert_eq!(Settings::default().tab_title_align, TabTitleAlign::Left);
         let align = |json: &str| Settings::parse(json).unwrap().tab_title_align;
-        assert_eq!(align(r#"{"tab_title_align": "center"}"#), TabTitleAlign::Center);
-        assert_eq!(align(r#"{"tab_title_align": "right"}"#), TabTitleAlign::Right);
+        assert_eq!(
+            align(r#"{"tab_title_align": "center"}"#),
+            TabTitleAlign::Center
+        );
+        assert_eq!(
+            align(r#"{"tab_title_align": "right"}"#),
+            TabTitleAlign::Right
+        );
         assert!(Settings::parse(r#"{"tab_title_align": "middle"}"#).is_err());
         assert!(Settings::parse(r#"{"tab_title": "number"}"#).is_err());
     }
@@ -309,9 +331,10 @@ pub(crate) mod tests {
         assert_eq!(settings.theme.dark, Some(PathBuf::from("themes/d.jsonc")));
         assert_eq!(settings.theme.light, Settings::default().theme.light);
 
-        let settings =
-            Settings::parse(r#"{"theme": {"mode": "dark", "dark": null, "light": "/abs/l.jsonc"}}"#)
-                .unwrap();
+        let settings = Settings::parse(
+            r#"{"theme": {"mode": "dark", "dark": null, "light": "/abs/l.jsonc"}}"#,
+        )
+        .unwrap();
         assert_eq!(settings.theme.mode, ThemeMode::Dark);
         assert_eq!(settings.theme.dark, None);
         assert_eq!(settings.theme.light, Some(PathBuf::from("/abs/l.jsonc")));
@@ -340,7 +363,10 @@ pub(crate) mod tests {
             r#"{"theme": {"mode": null}}"#,
             r#"{"theme": {"dark": 5}}"#,
         ] {
-            assert!(Settings::parse(json).is_err(), "expected error for {json:?}");
+            assert!(
+                Settings::parse(json).is_err(),
+                "expected error for {json:?}"
+            );
         }
     }
 
@@ -398,10 +424,17 @@ pub(crate) mod tests {
     #[test]
     fn font_size_below_min_uses_default() {
         for field in ["ui_font_size", "terminal.font_size"] {
-            for value in ["0", "0.0", "-0", "-0.0", "1", "0.5", "1e-30", "5", "-1", "-6", "-16", "-72", "-100", "-1e30", "-3.4e38"] {
+            for value in [
+                "0", "0.0", "-0", "-0.0", "1", "0.5", "1e-30", "5", "-1", "-6", "-16", "-72",
+                "-100", "-1e30", "-3.4e38",
+            ] {
                 let got = parse_font(field, value);
                 // exactly the default, not -0.0 or a clamp to 6
-                assert_eq!(got.to_bits(), 16.0f32.to_bits(), "{field} {value} gave {got}");
+                assert_eq!(
+                    got.to_bits(),
+                    16.0f32.to_bits(),
+                    "{field} {value} gave {got}"
+                );
             }
         }
     }
@@ -409,7 +442,9 @@ pub(crate) mod tests {
     #[test]
     fn font_size_above_max_is_capped() {
         for field in ["ui_font_size", "terminal.font_size"] {
-            for value in ["72.5", "73", "80", "100", "200", "1000", "1e6", "1e30", "3.4e38", "1e39", "1e300"] {
+            for value in [
+                "72.5", "73", "80", "100", "200", "1000", "1e6", "1e30", "3.4e38", "1e39", "1e300",
+            ] {
                 let got = parse_font(field, value);
                 assert_eq!(got, 72.0, "{field} {value} gave {got}");
             }
@@ -434,7 +469,10 @@ pub(crate) mod tests {
     fn tab_title_array_replaces_default_whole() {
         // default has 3 blocks, a shorter or longer user array must not be index merged
         let settings = Settings::parse(r#"{"tab_title": ["number", "prompt"]}"#).unwrap();
-        assert_eq!(settings.tab_title, vec![TabTitleBlock::Number, TabTitleBlock::Prompt]);
+        assert_eq!(
+            settings.tab_title,
+            vec![TabTitleBlock::Number, TabTitleBlock::Prompt]
+        );
         let settings = Settings::parse(r#"{"tab_title": ["folder"]}"#).unwrap();
         assert_eq!(settings.tab_title, vec![TabTitleBlock::Folder]);
     }

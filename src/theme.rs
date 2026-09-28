@@ -7,7 +7,7 @@ use gpui::{App, Global, Hsla, WindowAppearance, rgb};
 use serde::Deserialize;
 use serde_json_lenient::Value;
 
-use crate::settings::{Settings, ThemeMode, ThemeSettings, merge, create_default_file};
+use crate::settings::{Settings, ThemeMode, ThemeSettings, create_default_file, merge};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Theme {
@@ -41,7 +41,11 @@ pub const DEFAULT_LIGHT_THEME: &str = include_str!("../assets/default_theme_ligh
 
 impl Theme {
     fn bundled_json(dark: bool) -> &'static str {
-        if dark { DEFAULT_DARK_THEME } else { DEFAULT_LIGHT_THEME }
+        if dark {
+            DEFAULT_DARK_THEME
+        } else {
+            DEFAULT_LIGHT_THEME
+        }
     }
 
     /// bundled dark or light theme
@@ -72,7 +76,11 @@ impl Theme {
             }
         }
 
-        let custom = if dark { &settings.dark } else { &settings.light };
+        let custom = if dark {
+            &settings.dark
+        } else {
+            &settings.light
+        };
         let Some(path) = custom else {
             return Self::bundled(dark);
         };
@@ -94,7 +102,10 @@ impl Theme {
         let settings = &Settings::get(cx).theme;
         let dark = match settings.mode {
             ThemeMode::System => {
-                matches!(appearance, WindowAppearance::Dark | WindowAppearance::VibrantDark)
+                matches!(
+                    appearance,
+                    WindowAppearance::Dark | WindowAppearance::VibrantDark
+                )
             }
             ThemeMode::Dark => true,
             ThemeMode::Light => false,
@@ -161,7 +172,10 @@ mod tests {
         // 6x6x6 cube corners and a middle step
         assert_eq!(theme.get_color_at_index(16), rgb(0x000000).into());
         assert_eq!(theme.get_color_at_index(231), rgb(0xffffff).into());
-        assert_eq!(theme.get_color_at_index(16 + 36 + 6 * 2 + 3), rgb(0x5f87af).into());
+        assert_eq!(
+            theme.get_color_at_index(16 + 36 + 6 * 2 + 3),
+            rgb(0x5f87af).into()
+        );
         // grayscale ramp
         assert_eq!(theme.get_color_at_index(232), rgb(0x080808).into());
         assert_eq!(theme.get_color_at_index(255), rgb(0xeeeeee).into());
@@ -218,8 +232,18 @@ mod tests {
 
     #[test]
     fn rejects_invalid_themes() {
-        for json in ["{", "not json", "[]", "null", r#"{"cursor": "nope"}"#, r#"{"cursor": null}"#] {
-            assert!(Theme::parse(json, true).is_err(), "expected error for {json:?}");
+        for json in [
+            "{",
+            "not json",
+            "[]",
+            "null",
+            r#"{"cursor": "nope"}"#,
+            r#"{"cursor": null}"#,
+        ] {
+            assert!(
+                Theme::parse(json, true).is_err(),
+                "expected error for {json:?}"
+            );
         }
     }
 
@@ -241,7 +265,11 @@ mod tests {
             assert_eq!(Theme::load(&none, false), Theme::bundled(false));
 
             // relative paths start from the config folder
-            std::fs::write(config.join("themes/dark.jsonc"), r##"{"border": "#010203"}"##).unwrap();
+            std::fs::write(
+                config.join("themes/dark.jsonc"),
+                r##"{"border": "#010203"}"##,
+            )
+            .unwrap();
             let custom = settings(Some(Path::new("themes/dark.jsonc")), None);
             let mut expected = Theme::bundled(true);
             expected.border = rgb(0x010203).into();
@@ -255,7 +283,10 @@ mod tests {
             assert_eq!(Theme::load(&custom, false).text, rgb(0x0a0b0c).into());
 
             // missing files are created from the bundled theme of their mode
-            let custom = settings(Some(Path::new("new_dark.jsonc")), Some(Path::new("new_light.jsonc")));
+            let custom = settings(
+                Some(Path::new("new_dark.jsonc")),
+                Some(Path::new("new_light.jsonc")),
+            );
             assert_eq!(Theme::load(&custom, true), Theme::bundled(true));
             let dark = std::fs::read_to_string(config.join("new_dark.jsonc")).unwrap();
             let light = std::fs::read_to_string(config.join("new_light.jsonc")).unwrap();
@@ -267,7 +298,10 @@ mod tests {
             let custom = settings(Some(Path::new("broken.jsonc")), Some(Path::new("themes")));
             assert_eq!(Theme::load(&custom, true), Theme::bundled(true));
             assert_eq!(Theme::load(&custom, false), Theme::bundled(false));
-            assert_eq!(std::fs::read_to_string(config.join("broken.jsonc")).unwrap(), "{ broken");
+            assert_eq!(
+                std::fs::read_to_string(config.join("broken.jsonc")).unwrap(),
+                "{ broken"
+            );
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -285,11 +319,30 @@ mod tests {
                 format!("#{:02x}{:02x}{:02x}", c(rgba.r), c(rgba.g), c(rgba.b))
             };
             for (i, color) in theme.ansi.iter().enumerate() {
-                assert_eq!(hex(*color), value["ansi"][i].as_str().unwrap().to_lowercase(), "dark={dark} ansi {i}");
+                assert_eq!(
+                    hex(*color),
+                    value["ansi"][i].as_str().unwrap().to_lowercase(),
+                    "dark={dark} ansi {i}"
+                );
             }
-            assert_eq!(hex(theme.terminal_background), value["terminal_background"].as_str().unwrap().to_lowercase());
-            assert_eq!(hex(theme.terminal_foreground), value["terminal_foreground"].as_str().unwrap().to_lowercase());
-            assert_eq!(hex(theme.cursor), value["cursor"].as_str().unwrap().to_lowercase());
+            assert_eq!(
+                hex(theme.terminal_background),
+                value["terminal_background"]
+                    .as_str()
+                    .unwrap()
+                    .to_lowercase()
+            );
+            assert_eq!(
+                hex(theme.terminal_foreground),
+                value["terminal_foreground"]
+                    .as_str()
+                    .unwrap()
+                    .to_lowercase()
+            );
+            assert_eq!(
+                hex(theme.cursor),
+                value["cursor"].as_str().unwrap().to_lowercase()
+            );
         }
     }
 }

@@ -74,7 +74,9 @@ pub(crate) fn to_esc_str(
         ("down", TerminalModifiers::None) if mode.contains(TermMode::APP_CURSOR) => Some("\x1bOB"),
         ("down", TerminalModifiers::None) if !mode.contains(TermMode::APP_CURSOR) => Some("\x1b[B"),
         ("right", TerminalModifiers::None) if mode.contains(TermMode::APP_CURSOR) => Some("\x1bOC"),
-        ("right", TerminalModifiers::None) if !mode.contains(TermMode::APP_CURSOR) => Some("\x1b[C"),
+        ("right", TerminalModifiers::None) if !mode.contains(TermMode::APP_CURSOR) => {
+            Some("\x1b[C")
+        }
         ("left", TerminalModifiers::None) if mode.contains(TermMode::APP_CURSOR) => Some("\x1bOD"),
         ("left", TerminalModifiers::None) if !mode.contains(TermMode::APP_CURSOR) => Some("\x1b[D"),
         ("back", TerminalModifiers::None) => Some("\x7f"),
@@ -255,7 +257,6 @@ fn modifier_code(keystroke: &Keystroke) -> u32 {
     }
     modifier_code + 1
 }
-
 
 #[cfg(test)]
 mod test {

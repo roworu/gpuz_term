@@ -53,10 +53,13 @@ impl Keybindings {
         for (action, keys) in &bindings {
             let Some(keys) = keys else { continue };
             if keys.trim().is_empty() {
-                return Err(Error::custom(format!("empty keys for {action:?}, use null to disable it")));
+                return Err(Error::custom(format!(
+                    "empty keys for {action:?}, use null to disable it"
+                )));
             }
             for key in keys.split_whitespace() {
-                Keystroke::parse(key).map_err(|error| Error::custom(format!("{action:?}: {error}")))?;
+                Keystroke::parse(key)
+                    .map_err(|error| Error::custom(format!("{action:?}: {error}")))?;
             }
             if binding(action, keys).is_none() {
                 return Err(Error::custom(format!("unknown action {action:?}")));
@@ -105,7 +108,10 @@ mod tests {
 
     #[test]
     fn partial_file_merges_and_null_disables() {
-        let keys = Keybindings::parse(r#"{"new_tab": "ctrl-shift-t", "close_tab": null, "activate_tab_10": "alt-0",}"#).unwrap();
+        let keys = Keybindings::parse(
+            r#"{"new_tab": "ctrl-shift-t", "close_tab": null, "activate_tab_10": "alt-0",}"#,
+        )
+        .unwrap();
         assert_eq!(keys.0["new_tab"].as_deref(), Some("ctrl-shift-t"));
         assert_eq!(keys.0["close_tab"], None);
         assert_eq!(keys.0["paste"].as_deref(), Some("ctrl-shift-v"));
@@ -121,7 +127,10 @@ mod tests {
             r#"{"activate_tab_0": "alt-0"}"#,
             r#"{"new_tab": 5}"#,
         ] {
-            assert!(Keybindings::parse(json).is_err(), "{json} should be invalid");
+            assert!(
+                Keybindings::parse(json).is_err(),
+                "{json} should be invalid"
+            );
         }
     }
 
@@ -136,7 +145,10 @@ mod tests {
 
             std::fs::write(&path, r#"{"paste": null}"#).unwrap();
             assert_eq!(Keybindings::load().0["paste"], None);
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"{"paste": null}"#);
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                r#"{"paste": null}"#
+            );
 
             std::fs::write(&path, r#"{"bogus": "ctrl-b"}"#).unwrap();
             assert_eq!(Keybindings::load(), Keybindings::default());
@@ -161,7 +173,11 @@ mod tests {
                 .filter(|b| b.action().partial_eq(&ActivateTab(ix)))
                 .collect();
             assert_eq!(found.len(), 1, "expected one binding for tab {ix}");
-            found[0].keystrokes().iter().map(|k| k.inner().clone()).collect()
+            found[0]
+                .keystrokes()
+                .iter()
+                .map(|k| k.inner().clone())
+                .collect()
         };
         assert_eq!(strokes(9), vec![Keystroke::parse("alt-0").unwrap()]);
         // defaults untouched
@@ -170,13 +186,22 @@ mod tests {
 
     #[test]
     fn every_action_has_a_comment() {
-        for action in ["new_tab", "close_tab", "next_tab", "paste", "activate_tab_1"] {
+        for action in [
+            "new_tab",
+            "close_tab",
+            "next_tab",
+            "paste",
+            "activate_tab_1",
+        ] {
             let line = DEFAULT_KEYBINDINGS
                 .lines()
                 .position(|line| line.trim_start().starts_with(&format!("\"{action}\"")))
                 .unwrap();
             let previous = DEFAULT_KEYBINDINGS.lines().nth(line - 1).unwrap();
-            assert!(previous.trim_start().starts_with("//"), "{action} has no comment above it");
+            assert!(
+                previous.trim_start().starts_with("//"),
+                "{action} has no comment above it"
+            );
         }
     }
 }

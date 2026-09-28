@@ -10,8 +10,8 @@ use futures::{
     channel::mpsc::{UnboundedSender, unbounded},
 };
 use gpui::{
-    Action, App, Context, Entity, EntityId, Focusable, ScrollHandle, Subscription, Task, Window, actions,
-    prelude::*,
+    Action, App, Context, Entity, EntityId, Focusable, ScrollHandle, Subscription, Task, Window,
+    actions, prelude::*,
 };
 
 use tab_title::TitleInputs;
@@ -34,7 +34,12 @@ pub struct ActivateTab(pub usize);
 const TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 // tab title blocks, window title blocks, active tab, per tab inputs
-type TitleSnapshot = (Vec<TabTitleBlock>, Vec<TabTitleBlock>, usize, Vec<(EntityId, TitleInputs)>);
+type TitleSnapshot = (
+    Vec<TabTitleBlock>,
+    Vec<TabTitleBlock>,
+    usize,
+    Vec<(EntityId, TitleInputs)>,
+);
 
 struct Tab {
     view: Entity<TerminalView>,
@@ -85,7 +90,10 @@ impl Workspace {
                 }) else {
                     break;
                 };
-                let mut timer = cx.background_executor().timer(TITLE_REFRESH_INTERVAL).fuse();
+                let mut timer = cx
+                    .background_executor()
+                    .timer(TITLE_REFRESH_INTERVAL)
+                    .fuse();
                 futures::select_biased! {
                     _ = refresh_rx.next() => {},
                     _ = timer => {},
@@ -195,7 +203,12 @@ impl Workspace {
                 (tab.view.entity_id(), inputs)
             })
             .collect();
-        (settings.tab_title.clone(), settings.window_title.clone(), self.active, inputs)
+        (
+            settings.tab_title.clone(),
+            settings.window_title.clone(),
+            self.active,
+            inputs,
+        )
     }
 
     fn set_titles(
@@ -243,7 +256,12 @@ impl Workspace {
         self.activate_tab((self.active + 1) % self.tabs.len(), window, cx);
     }
 
-    fn activate_tab_action(&mut self, action: &ActivateTab, window: &mut Window, cx: &mut Context<Self>) {
+    fn activate_tab_action(
+        &mut self,
+        action: &ActivateTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if action.0 < self.tabs.len() {
             self.activate_tab(action.0, window, cx);
         }
@@ -252,10 +270,7 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        path::PathBuf,
-        time::Instant,
-    };
+    use std::{path::PathBuf, time::Instant};
 
     use alacritty_terminal::term::TermMode;
     use gpui::{TestAppContext, VisualTestContext};
@@ -285,7 +300,11 @@ mod tests {
             ws.update_in(cx, |ws, window, cx| ws.add_tab(window, cx));
             cx.run_until_parked();
         }
-        assert_eq!(ws.update(cx, |ws, _| ws.tabs.len()), tabs, "failed to spawn shells");
+        assert_eq!(
+            ws.update(cx, |ws, _| ws.tabs.len()),
+            tabs,
+            "failed to spawn shells"
+        );
         (ws, cx)
     }
 
@@ -294,7 +313,9 @@ mod tests {
     }
 
     fn views(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<EntityId> {
-        ws.update(cx, |ws, _| ws.tabs.iter().map(|t| t.view.entity_id()).collect())
+        ws.update(cx, |ws, _| {
+            ws.tabs.iter().map(|t| t.view.entity_id()).collect()
+        })
     }
 
     /// active tab index, checking that focus is on it
@@ -307,7 +328,11 @@ mod tests {
                 .filter(|(_, tab)| tab.view.focus_handle(cx).is_focused(window))
                 .map(|(ix, _)| ix)
                 .collect();
-            assert_eq!(focused, vec![ws.active], "focus does not follow the active tab");
+            assert_eq!(
+                focused,
+                vec![ws.active],
+                "focus does not follow the active tab"
+            );
             ws.active
         })
     }
@@ -319,7 +344,9 @@ mod tests {
     }
 
     fn activate(ws: &Entity<Workspace>, cx: &mut VisualTestContext, ix: usize) -> usize {
-        ws.update_in(cx, |ws, window, cx| ws.activate_tab_action(&ActivateTab(ix), window, cx));
+        ws.update_in(cx, |ws, window, cx| {
+            ws.activate_tab_action(&ActivateTab(ix), window, cx)
+        });
         cx.run_until_parked();
         current(ws, cx)
     }
@@ -379,7 +406,11 @@ mod tests {
         cx.run_until_parked();
     }
 
-    fn wait_until(cx: &mut VisualTestContext, what: &str, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
+    fn wait_until(
+        cx: &mut VisualTestContext,
+        what: &str,
+        mut done: impl FnMut(&mut VisualTestContext) -> bool,
+    ) {
         let deadline = Instant::now() + Duration::from_secs(15);
         while !done(cx) {
             assert!(Instant::now() < deadline, "timed out: {what}");
@@ -404,12 +435,22 @@ mod tests {
 
     /// in the active tab: optionally enable focus reporting (mode 1004), then save READ raw
     /// input bytes as hex into the returned file
-    fn reader(ws: &Entity<Workspace>, cx: &mut VisualTestContext, focus_mode: bool, name: &str) -> (usize, PathBuf) {
-        let file = std::env::temp_dir().join(format!("gpuz_term_focus_{name}_{}", std::process::id()));
+    fn reader(
+        ws: &Entity<Workspace>,
+        cx: &mut VisualTestContext,
+        focus_mode: bool,
+        name: &str,
+    ) -> (usize, PathBuf) {
+        let file =
+            std::env::temp_dir().join(format!("gpuz_term_focus_{name}_{}", std::process::id()));
         let ready = file.with_extension("ready");
         let _ = std::fs::remove_file(&file);
         let _ = std::fs::remove_file(&ready);
-        let mode = if focus_mode { "printf '\\033[?1004h'; " } else { "" };
+        let mode = if focus_mode {
+            "printf '\\033[?1004h'; "
+        } else {
+            ""
+        };
         let (f, r) = (file.display(), ready.display());
         let command = format!(
             "{mode}stty raw -echo; touch {r}; dd bs=1 count={READ} 2>/dev/null | od -An -v -tx1 | tr -d ' \\n' > {f}.tmp; mv {f}.tmp {f}; stty sane\r"
@@ -419,7 +460,9 @@ mod tests {
         terminal.update(cx, |t, _| t.input(command.into_bytes()));
         wait_until(cx, "reader never started", |_| ready.exists());
         wait_until(cx, "focus mode never reached the view", |cx| {
-            terminal.read_with(cx, |t, _| t.last_content.mode.contains(TermMode::FOCUS_IN_OUT)) == focus_mode
+            terminal.read_with(cx, |t, _| {
+                t.last_content.mode.contains(TermMode::FOCUS_IN_OUT)
+            }) == focus_mode
         });
         // let dd start reading
         for _ in 0..5 {
@@ -437,7 +480,11 @@ mod tests {
 
     /// fill the reader up and return what it got before: "I", "O" or other bytes as hex, with
     /// repeated identical reports merged
-    fn finish(ws: &Entity<Workspace>, cx: &mut VisualTestContext, (ix, file): (usize, PathBuf)) -> Vec<String> {
+    fn finish(
+        ws: &Entity<Workspace>,
+        cx: &mut VisualTestContext,
+        (ix, file): (usize, PathBuf),
+    ) -> Vec<String> {
         send_to(ws, cx, ix, &"x".repeat(READ));
         wait_until(cx, "no reader output", |_| file.exists());
         let hex = std::fs::read_to_string(&file).unwrap();
@@ -509,7 +556,11 @@ mod tests {
             }
             want[active].extend(["O", "I"]);
             for (ix, r) in readers.into_iter().enumerate() {
-                assert_eq!(finish(&ws, cx, r), want[ix], "tab {ix} with tab {active} active");
+                assert_eq!(
+                    finish(&ws, cx, r),
+                    want[ix],
+                    "tab {ix} with tab {active} active"
+                );
             }
         }
     }

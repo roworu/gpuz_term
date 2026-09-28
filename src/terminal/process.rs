@@ -13,7 +13,13 @@ pub struct ForegroundProcess {
 pub fn foreground_process(shell_pid: u32) -> Option<ForegroundProcess> {
     let stat = std::fs::read_to_string(format!("/proc/{shell_pid}/stat")).ok()?;
     // comm may contain spaces and parens, so count fields after the last ')'
-    let tpgid: i32 = stat.rsplit_once(')')?.1.split_whitespace().nth(5)?.parse().ok()?;
+    let tpgid: i32 = stat
+        .rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(5)?
+        .parse()
+        .ok()?;
     // -1 when there is no controlling terminal, then the shell itself is shown
     let pid = if tpgid > 0 { tpgid as u32 } else { shell_pid };
     let name = process_name(pid)?;
@@ -67,7 +73,13 @@ mod tests {
     // so name checks only work without one, like in the container
     fn has_no_ctty() -> bool {
         let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
-        stat.rsplit_once(')').unwrap().1.split_whitespace().nth(5).unwrap() == "-1"
+        stat.rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .nth(5)
+            .unwrap()
+            == "-1"
     }
 
     #[test]

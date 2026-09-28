@@ -88,7 +88,8 @@ impl Terminal {
 
     /// scroll the viewport by lines, positive is up into history
     pub fn scroll(&mut self, lines: i32) {
-        self.events.push(InternalEvent::Scroll(Scroll::Delta(lines)));
+        self.events
+            .push(InternalEvent::Scroll(Scroll::Delta(lines)));
     }
 
     /// map a keystroke to an escape sequence and write it, returns false if unmapped
@@ -151,7 +152,9 @@ mod tests {
     use futures::{FutureExt, StreamExt};
     use gpui::{Bounds, px, size};
 
-    use super::{Terminal, TerminalBounds, TerminalBuilder, foreground_process, process::ForegroundProcess};
+    use super::{
+        Terminal, TerminalBounds, TerminalBuilder, foreground_process, process::ForegroundProcess,
+    };
     use crate::settings::{CursorShape, Shell, TerminalSettings};
 
     fn spawn(settings: &TerminalSettings) -> TerminalBuilder {
@@ -187,7 +190,10 @@ mod tests {
             if text.contains(needle) {
                 return;
             }
-            assert!(Instant::now() < deadline, "no {needle:?} on screen:\n{text}");
+            assert!(
+                Instant::now() < deadline,
+                "no {needle:?} on screen:\n{text}"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
     }
@@ -268,7 +274,10 @@ mod tests {
                 assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
                 return;
             }
-            assert!(Instant::now() < deadline, "sleep is not in foreground: {process:?}");
+            assert!(
+                Instant::now() < deadline,
+                "sleep is not in foreground: {process:?}"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
     }

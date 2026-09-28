@@ -136,9 +136,7 @@ pub(super) fn layout_grid(
 
         let style = cell_style(cell, fg, font, theme);
         match runs.last_mut() {
-            Some(run) if run.can_append(line, column, &style) => {
-                run.push(cell.c, cell.zerowidth())
-            }
+            Some(run) if run.can_append(line, column, &style) => run.push(cell.c, cell.zerowidth()),
             _ => {
                 let mut run = BatchedTextRun {
                     line,
@@ -193,15 +191,21 @@ fn cell_style(cell: &Cell, fg: Color, font: &Font, theme: &Theme) -> TextRun {
         a: color.a.sqrt(),
         ..color
     };
-    let underline = cell.flags.intersects(Flags::ALL_UNDERLINES).then(|| UnderlineStyle {
-        color: Some(line_color),
-        thickness: px(1.),
-        wavy: cell.flags.contains(Flags::UNDERCURL),
-    });
-    let strikethrough = cell.flags.contains(Flags::STRIKEOUT).then(|| StrikethroughStyle {
-        color: Some(line_color),
-        thickness: px(1.),
-    });
+    let underline = cell
+        .flags
+        .intersects(Flags::ALL_UNDERLINES)
+        .then(|| UnderlineStyle {
+            color: Some(line_color),
+            thickness: px(1.),
+            wavy: cell.flags.contains(Flags::UNDERCURL),
+        });
+    let strikethrough = cell
+        .flags
+        .contains(Flags::STRIKEOUT)
+        .then(|| StrikethroughStyle {
+            color: Some(line_color),
+            thickness: px(1.),
+        });
     let font = Font {
         weight: if cell.flags.contains(Flags::BOLD) {
             FontWeight::BOLD
@@ -238,7 +242,10 @@ mod tests {
     use super::*;
 
     fn themes() -> [(&'static str, Theme); 2] {
-        [("dark", Theme::bundled(true)), ("light", Theme::bundled(false))]
+        [
+            ("dark", Theme::bundled(true)),
+            ("light", Theme::bundled(false)),
+        ]
     }
 
     /// xterm 256 color palette entry 16-255, computed here instead of asking the theme
@@ -275,7 +282,10 @@ mod tests {
         let cells: Vec<IndexedCell> = term
             .renderable_content()
             .display_iter
-            .map(|indexed| IndexedCell { point: indexed.point, cell: indexed.cell.clone() })
+            .map(|indexed| IndexedCell {
+                point: indexed.point,
+                cell: indexed.cell.clone(),
+            })
             .collect();
         layout_grid(&cells, 0, &font("Mono"), theme).1
     }
@@ -283,7 +293,9 @@ mod tests {
     /// the text run that paints column `col` of line 0
     fn run_at(runs: &[BatchedTextRun], col: i32) -> &BatchedTextRun {
         runs.iter()
-            .find(|run| run.line == 0 && run.column <= col && col < run.column + run.cell_count as i32)
+            .find(|run| {
+                run.line == 0 && run.column <= col && col < run.column + run.cell_count as i32
+            })
             .unwrap_or_else(|| panic!("no text run at column {col}"))
     }
 
@@ -323,11 +335,18 @@ mod tests {
     #[test]
     fn sgr_22_and_0_end_dim() {
         for (name, theme) in themes() {
-            let runs = layout("\x1b[2;31mA\x1b[22mB\x1b[2mC\x1b[0mD\x1b[2mE\x1b[1mF", &theme);
+            let runs = layout(
+                "\x1b[2;31mA\x1b[22mB\x1b[2mC\x1b[0mD\x1b[2mE\x1b[1mF",
+                &theme,
+            );
             assert_color(run_at(&runs, 0).style.color, theme.ansi_dim[1], name);
             assert_color(run_at(&runs, 1).style.color, theme.ansi[1], name);
             assert_color(run_at(&runs, 2).style.color, theme.ansi_dim[1], name);
-            assert_color(run_at(&runs, 3).style.color, theme.terminal_foreground, name);
+            assert_color(
+                run_at(&runs, 3).style.color,
+                theme.terminal_foreground,
+                name,
+            );
             assert_color(run_at(&runs, 4).style.color, theme.dim_foreground, name);
             // bold on top of dim keeps dim
             assert_color(run_at(&runs, 5).style.color, theme.dim_foreground, name);
