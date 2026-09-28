@@ -1,0 +1,7 @@
+# actions are pinned by version tag, not hash, so allow ref pins everywhere
+# TODO : switch to hashes later....
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "*": ref-pin

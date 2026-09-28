@@ -8,7 +8,7 @@ env:
   CARGO_TERM_COLOR: always
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, name: x86_64-linux }
+          - { os: ubuntu-26.04, target: x86_64-unknown-linux-gnu, name: x86_64-linux }
           - { os: macos-latest, target: aarch64-apple-darwin, name: aarch64-macos }
           - { os: macos-latest, target: x86_64-apple-darwin, name: x86_64-macos }
           - { os: windows-latest, target: x86_64-pc-windows-msvc, name: x86_64-windows }
@@ -31,6 +31,8 @@ jobs:
     steps:
 
     - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Install dependencies
       if: runner.os == 'Linux'
@@ -73,7 +75,12 @@ jobs:
   publish:
 
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
 
     steps:
 
@@ -81,7 +88,15 @@ jobs:
       with:
         merge-multiple: true
 
+    - name: Checksums
+      run: sha256sum gpuz_term-* > SHA256SUMS
+
+    - name: Attest build provenance
+      uses: actions/attest-build-provenance@v4
+      with:
+        subject-path: gpuz_term-*
+
     - name: Publish
       env:
         GH_TOKEN: ${{ github.token }}
-      run: gh release create "$GITHUB_REF_NAME" gpuz_term-* --repo "$GITHUB_REPOSITORY" --generate-notes
+      run: gh release create "$GITHUB_REF_NAME" gpuz_term-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --generate-notes
