@@ -158,6 +158,7 @@ jobs:
       run: sha256sum kuterm-* > SHA256SUMS
 
     - name: Attest build provenance
+      id: attest
       uses: actions/attest-build-provenance@v4
       with:
         subject-path: kuterm-*
@@ -165,4 +166,7 @@ jobs:
     - name: Publish
       env:
         GH_TOKEN: ${{ github.token }}
-      run: gh release create "${RELEASE_REF#release/}" kuterm-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --generate-notes
+        BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+      run: |
+        cp "$BUNDLE_PATH" "kuterm-${RELEASE_REF#release/}.intoto.jsonl"
+        gh release create "${RELEASE_REF#release/}" kuterm-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --generate-notes
