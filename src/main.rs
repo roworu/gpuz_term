@@ -3,7 +3,7 @@ mod terminal;
 mod theme;
 mod ui;
 
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::Arc};
 
 use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 use gpui_platform::application;
@@ -59,6 +59,11 @@ fn main() {
                     ..Default::default()
                 }),
                 app_id: Some("gpuz_term".into()),
+                icon: Some(Arc::new(
+                    image::load_from_memory(include_bytes!("../assets/logo/icon_256.png"))
+                        .expect("failed to load bundled icon")
+                        .into_rgba8(),
+                )),
                 ..Default::default()
             },
             |window, cx| cx.new(|cx| Workspace::new(window, cx)),

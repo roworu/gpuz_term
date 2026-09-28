@@ -11,6 +11,7 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "397cbc84de333eeb5
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "397cbc84de333eeb56849dc90782d365b37e60d7", features = ["wayland", "x11", "font-kit"] }
 alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "4c129667ce56611becdc82de6e28218c80e2e88f" }
 anyhow = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json_lenient = "0.2"
