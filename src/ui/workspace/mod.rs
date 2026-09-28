@@ -444,8 +444,7 @@ mod tests {
         focus_mode: bool,
         name: &str,
     ) -> (usize, PathBuf) {
-        let file =
-            std::env::temp_dir().join(format!("kuterm_focus_{name}_{}", std::process::id()));
+        let file = std::env::temp_dir().join(format!("kuterm_focus_{name}_{}", std::process::id()));
         let ready = file.with_extension("ready");
         let _ = std::fs::remove_file(&file);
         let _ = std::fs::remove_file(&ready);
