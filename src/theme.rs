@@ -59,7 +59,7 @@ impl Theme {
     }
 
     // relative paths start from the folder with settings.jsonc
-    fn resolve(path: &Path) -> PathBuf {
+    pub(crate) fn resolve(path: &Path) -> PathBuf {
         Settings::path()
             .and_then(|settings| settings.parent().map(|dir| dir.join(path)))
             .unwrap_or_else(|| path.to_path_buf())

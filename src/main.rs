@@ -1,3 +1,4 @@
+mod cli;
 mod settings;
 mod terminal;
 mod theme;
@@ -9,6 +10,7 @@ use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions
 use gpui_platform::application;
 
 use crate::{
+    cli::{Cli, USAGE},
     settings::{Keybindings, Settings, TabIcons},
     theme::Theme,
     ui::workspace::Workspace,
@@ -35,13 +37,30 @@ fn init(cx: &mut App) {
         .add_fonts(fonts)
         .expect("failed to load bundled fonts");
 
-    cx.set_global(Settings::load());
+    let cli = Cli::get();
+    if cli.recreate_confs {
+        cli.remove_configs();
+    }
+    let mut settings = Settings::load();
+    cli.apply(&mut settings);
+    cx.set_global(settings);
     cx.set_global(TabIcons::load());
     Theme::apply(cx.window_appearance(), cx);
     cx.bind_keys(Keybindings::load().bindings());
 }
 
 fn main() {
+    match Cli::parse(std::env::args_os().skip(1)) {
+        Ok(cli) if cli.help => {
+            println!("{USAGE}");
+            return;
+        }
+        Ok(cli) => cli.init(),
+        Err(error) => {
+            eprintln!("{error}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    }
     application().run(|cx: &mut App| {
         init(cx);
         cx.on_window_closed(|cx, _| cx.quit()).detach();

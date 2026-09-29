@@ -5,7 +5,8 @@ use std::{collections::BTreeMap, path::PathBuf};
 use gpui::{KeyBinding, Keystroke};
 use serde::de::Error;
 
-use super::{Settings, load_file, parse_over};
+use super::{config_dir, load_file, parse_over};
+use crate::cli::Cli;
 use crate::ui::{
     terminal_view::{Copy, Paste},
     workspace::{ActivateTab, CloseTab, NewTab, NextTab},
@@ -40,9 +41,12 @@ fn binding(action: &str, keys: &str) -> Option<KeyBinding> {
 }
 
 impl Keybindings {
-    /// `keybindings.jsonc` in the same folder as `settings.jsonc`
+    /// `--keybindings-file`, or `keybindings.jsonc` in the config dir
     pub fn path() -> Option<PathBuf> {
-        Some(Settings::path()?.with_file_name("keybindings.jsonc"))
+        Cli::get()
+            .keybindings_file
+            .clone()
+            .or_else(|| Some(config_dir()?.join("keybindings.jsonc")))
     }
 
     /// parse keybindings over the bundled ones, rejecting unknown actions and bad keys

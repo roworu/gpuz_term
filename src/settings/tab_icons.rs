@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use gpui::{App, Global};
 use serde::Deserialize;
 
-use super::{Settings, load_file, parse_over};
+use super::{config_dir, load_file, parse_over};
+use crate::cli::Cli;
 
 /// commented tab icons file written on first launch
 pub const DEFAULT_TAB_ICONS: &str = include_str!("../../assets/tab_icons.jsonc");
@@ -34,9 +35,12 @@ impl Default for TabIcons {
 impl Global for TabIcons {}
 
 impl TabIcons {
-    /// `tab_icons.jsonc` in the same folder as `settings.jsonc`
+    /// `--tab-icons-file`, or `tab_icons.jsonc` in the config dir
     pub fn path() -> Option<PathBuf> {
-        Some(Settings::path()?.with_file_name("tab_icons.jsonc"))
+        Cli::get()
+            .tab_icons_file
+            .clone()
+            .or_else(|| Some(config_dir()?.join("tab_icons.jsonc")))
     }
 
     /// parse tab icons over the bundled ones

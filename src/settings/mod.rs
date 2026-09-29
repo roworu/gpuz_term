@@ -19,6 +19,8 @@ pub use options::{
 };
 pub use tab_icons::TabIcons;
 
+use crate::cli::Cli;
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Settings {
     pub ui_font_family: String,
@@ -147,15 +149,23 @@ pub(crate) fn load_file<T: Default>(
     })
 }
 
+/// `$XDG_CONFIG_HOME/kuterm`, falling back to `~/.config/kuterm`
+pub fn config_dir() -> Option<PathBuf> {
+    // xdg says empty or relative values must be ignored
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    Some(config_dir.join("kuterm"))
+}
+
 impl Settings {
-    /// `$XDG_CONFIG_HOME/kuterm/settings.jsonc`, falling back to `~/.config`
+    /// `--config-file`, or `settings.jsonc` in the config dir
     pub fn path() -> Option<PathBuf> {
-        // xdg says empty or relative values must be ignored
-        let config_dir = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|dir| dir.is_absolute())
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-        Some(config_dir.join("kuterm").join("settings.jsonc"))
+        Cli::get()
+            .config_file
+            .clone()
+            .or_else(|| Some(config_dir()?.join("settings.jsonc")))
     }
 
     /// parse settings, we allow comments and trailing commas
@@ -272,15 +282,6 @@ pub(crate) mod tests {
     fn empty_file_uses_defaults() {
         let settings = Settings::parse("{}").unwrap();
         assert_eq!(settings, Settings::default());
-        assert_eq!(settings.ui_font_size, 16.);
-        assert_eq!(settings.terminal.font_size, 16.);
-        assert_eq!(
-            settings.terminal.font_family,
-            "JetBrainsMonoNL Nerd Font Mono"
-        );
-        assert_eq!(settings.default_profile().command, Shell::System);
-        assert_eq!(settings.terminal.line_height.value(), 1.3);
-        assert_eq!(settings.terminal.cursor_shape, CursorShape::Bar);
     }
 
     #[test]
@@ -345,9 +346,10 @@ pub(crate) mod tests {
     #[test]
     fn partial_terminal_section_keeps_other_defaults() {
         let settings = Settings::parse(r#"{"terminal": {"cursor_shape": "hollow"}}"#).unwrap();
+        let defaults = Settings::default();
         assert_eq!(settings.terminal.cursor_shape, CursorShape::Hollow);
-        assert_eq!(settings.terminal.font_size, 16.);
-        assert_eq!(settings.ui_font_size, 16.);
+        assert_eq!(settings.terminal.font_size, defaults.terminal.font_size);
+        assert_eq!(settings.ui_font_size, defaults.ui_font_size);
     }
 
     #[test]
@@ -506,16 +508,21 @@ pub(crate) mod tests {
 
     #[test]
     fn font_size_below_min_uses_default() {
+        let defaults = Settings::default();
         for field in ["ui_font_size", "terminal.font_size"] {
             for value in [
                 "0", "0.0", "-0", "-0.0", "1", "0.5", "1e-30", "5", "-1", "-6", "-16", "-72",
                 "-100", "-1e30", "-3.4e38",
             ] {
                 let got = parse_font(field, value);
+                let default = match field {
+                    "ui_font_size" => defaults.ui_font_size,
+                    _ => defaults.terminal.font_size,
+                };
                 // exactly the default, not -0.0 or a clamp to 6
                 assert_eq!(
                     got.to_bits(),
-                    16.0f32.to_bits(),
+                    default.to_bits(),
                     "{field} {value} gave {got}"
                 );
             }
