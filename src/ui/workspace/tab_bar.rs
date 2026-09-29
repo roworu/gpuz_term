@@ -7,6 +7,10 @@ use gpui::{
     AnyElement, Context, Div, MouseButton, ScrollHandle, Stateful, Window, anchored, deferred, div,
     prelude::*, px, rems,
 };
+use skrifa::{
+    FontRef, MetadataProvider,
+    instance::{LocationRef, Size},
+};
 
 use super::Workspace;
 use crate::{
@@ -21,16 +25,21 @@ const TEXT_SIZE: f32 = 0.875;
 fn icon_drop(icon: &str) -> f32 {
     // nerd font icons are centered on the line, not set on the baseline like letters.
     // gpui can't measure glyph outlines on linux, so they are read from the bundled font
-    static FACE: LazyLock<Option<ttf_parser::Face<'static>>> =
-        LazyLock::new(|| ttf_parser::Face::parse(crate::FONT_REGULAR, 0).ok());
-    let Some(face) = FACE.as_ref() else {
+    static FONT: LazyLock<Option<FontRef<'static>>> =
+        LazyLock::new(|| FontRef::new(crate::FONT_REGULAR).ok());
+    let Some(font) = FONT.as_ref() else {
         return 0.;
     };
+    let charmap = font.charmap();
+    let glyphs = font.glyph_metrics(Size::unscaled(), LocationRef::default());
+    let units_per_em = font
+        .metrics(Size::unscaled(), LocationRef::default())
+        .units_per_em as f32;
     icon.chars()
-        .filter_map(|ch| face.glyph_bounding_box(face.glyph_index(ch)?))
+        .filter_map(|ch| glyphs.bounds(charmap.map(ch)?))
         .map(|bounds| bounds.y_min)
-        .min()
-        .map_or(0., |y_min| y_min as f32 / face.units_per_em() as f32)
+        .reduce(f32::min)
+        .map_or(0., |y_min| y_min / units_per_em)
 }
 
 /// row holding the tabs, fills the bar next to the new tab button

@@ -15,7 +15,7 @@
   // stretch tabs to fill the whole tab bar, sharing its width equally
   "expand_tabs": false,
   // tab width in pixels when "expand_tabs" is false, wheel scrolls tabs that don't fit
-  "tab_width": 180,
+  "tab_width": 220,
   // tab title, built from these blocks in order:
   //   "number"                                 - tab position, starting at 1
   //   "prompt"                                 - user@host
