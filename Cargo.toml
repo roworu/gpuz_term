@@ -25,8 +25,8 @@ assets = [
 
 [dependencies]
 # gpui bandled inside zed repo
-gpui = { git = "https://github.com/zed-industries/zed", rev = "397cbc84de333eeb56849dc90782d365b37e60d7" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "397cbc84de333eeb56849dc90782d365b37e60d7", features = ["wayland", "x11", "font-kit"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "017f9b89aa26bfcb015b3f05c3f2dff64704338d" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "017f9b89aa26bfcb015b3f05c3f2dff64704338d", features = ["wayland", "x11", "font-kit"] }
 alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "4c129667ce56611becdc82de6e28218c80e2e88f" }
 anyhow = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -38,4 +38,4 @@ skrifa = "0.47"
 
 [dev-dependencies]
 # test platform for rendering views without a display
-gpui = { git = "https://github.com/zed-industries/zed", rev = "397cbc84de333eeb56849dc90782d365b37e60d7", features = ["test-support"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "017f9b89aa26bfcb015b3f05c3f2dff64704338d", features = ["test-support"] }
