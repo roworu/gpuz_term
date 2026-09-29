@@ -59,5 +59,13 @@
       "icon": "󰏖",
       "commands": ["apt", "apt-get", "aptitude", "dpkg", "nala", "dnf", "dnf5", "yum", "rpm", "rpm-ostree", "zypper", "pacman", "yay", "paru", "pamac", "apk", "emerge", "xbps-install", "eopkg", "nix", "nix-env", "flatpak", "snap", "brew", "pkg"],
     },
-  ],
+
+    {
+      // compilers and build tools
+      "icon": "",
+      "commands": [
+        "gcc", "g++", "cc", "c++", "clang", "clang++", "zig", "rustc", "cargo", "go", "javac", "kotlinc", "make", "gmake", "cmake", "ninja", "meson", "mvn", "gradle", "python", "python3"
+      ],
+    }
+  ]
 }
