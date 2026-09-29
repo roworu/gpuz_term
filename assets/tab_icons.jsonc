@@ -3,6 +3,9 @@
 // this file is created with default values on first launch.
 // icons of programs in tabs, when "tab_icon.dynamic" is on in settings.
 
+// you can find more icons to use here:
+// https://www.nerdfonts.com/cheat-sheet
+
 {
   // programs started through these are matched by their script, like "pi" in "node /usr/bin/pi"
   "interpreters": ["node", "nodejs", "bun", "deno", "python", "python3", "ruby", "perl"],
