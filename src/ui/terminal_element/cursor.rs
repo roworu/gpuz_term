@@ -2,14 +2,13 @@
 
 use alacritty_terminal::vte::ansi::CursorShape;
 use gpui::{
-    App, Bounds, Pixels, Point, ShapedLine, TextAlign, Window, fill, outline, point, px, size,
+    App, Bounds, Hsla, Pixels, Point, ShapedLine, TextAlign, Window, fill, outline, point, px, size,
 };
-
-use crate::theme::Theme;
 
 pub(super) struct CursorLayout {
     pub(super) bounds: Bounds<Pixels>,
     pub(super) shape: CursorShape,
+    pub(super) color: Hsla,
     pub(super) focused: bool,
     pub(super) text: ShapedLine,
 }
@@ -17,7 +16,7 @@ pub(super) struct CursorLayout {
 impl CursorLayout {
     pub(super) fn paint(&self, origin: Point<Pixels>, window: &mut Window, cx: &mut App) {
         let bounds = self.bounds + origin;
-        let color = Theme::get(cx).cursor;
+        let color = self.color;
         match self.shape {
             CursorShape::Block if self.focused => {
                 window.paint_quad(fill(bounds, color));

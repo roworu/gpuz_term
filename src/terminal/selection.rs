@@ -88,7 +88,7 @@ mod tests {
     use super::*;
     use crate::{
         settings::{Shell, TerminalSettings},
-        terminal::tests::{spawn, wait_for_text},
+        terminal::tests::{profile, spawn_with, wait_for_text},
     };
 
     // 10px cells, 20px lines, grid starts at (5, 40) like below a tab bar
@@ -140,17 +140,14 @@ mod tests {
     }
 
     fn two_lines() -> crate::terminal::TerminalBuilder {
-        let settings = TerminalSettings {
-            shell: Shell::WithArguments {
-                program: "/bin/sh".into(),
-                args: vec![
-                    "-c".into(),
-                    "printf 'hello world\\nsecond line'; sleep 5".into(),
-                ],
-            },
-            ..TerminalSettings::default()
-        };
-        let mut builder = spawn(&settings);
+        let profile = profile(Shell::WithArguments {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "printf 'hello world\\nsecond line'; sleep 5".into(),
+            ],
+        });
+        let mut builder = spawn_with(&TerminalSettings::default(), &profile);
         wait_for_text(&mut builder.terminal, "second line");
         builder
     }

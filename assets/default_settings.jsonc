@@ -52,11 +52,6 @@
   },
 
   "terminal": {
-    // shell to launch in new tabs:
-    //   "system"                                                   - login shell of current user
-    //   { "program": "zsh" }                                       - specific program
-    //   { "with_arguments": { "program": "bash", "args": ["--login"] } } - program with arguments
-    "shell": "system",
     // terminal font, bundled "JetBrainsMonoNL Nerd Font Mono" is always available
     "font_family": "JetBrainsMonoNL Nerd Font Mono",
     // terminal font size in pixels
@@ -70,4 +65,28 @@
     // cursor shape: "block", "bar", "underline" or "hollow"
     "cursor_shape": "bar",
   },
+
+  // what new tabs start with. ctrl-shift-t and a click on "+" open the default profile,
+  // a right click on "+" picks any profile when there is more than one.
+  // "name" and "command" are required, the other keys can be left out.
+  "profiles": [
+    {
+      // shown in the profile menu
+      "name": "default",
+      // only one profile can be default, the first one is used when none is
+      "default": true,
+      // program to launch:
+      //   "system"                                                   - login shell of current user
+      //   { "program": "zsh" }                                       - specific program
+      //   { "with_arguments": { "program": "bash", "args": ["--login"] } } - program with arguments
+      "command": "system",
+      // folder to start in, "~" is the home folder, null uses the folder kuterm started in
+      "working_directory": null,
+      // color scheme, same keys as "theme" above, like { "mode": "dark", "dark": "themes/red.jsonc" }.
+      // null uses "theme"
+      "theme": null,
+      // extra environment variables, like { "EDITOR": "vim" }
+      "env": {},
+    },
+  ],
 }

@@ -7,15 +7,14 @@ mod input_handler;
 use alacritty_terminal::vte::ansi::CursorShape;
 use gpui::{
     App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, Entity, FocusHandle,
-    Font, FontFeatures, GlobalElementId, Hitbox, HitboxBehavior,
-    InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Style, TextRun, Window, fill, point, px, relative, size,
+    Font, FontFeatures, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Style, TextRun,
+    Window, fill, point, px, relative, size,
 };
 
 use crate::{
     settings::Settings,
     terminal::{Terminal, TerminalBounds},
-    theme::Theme,
     ui::terminal_view::TerminalView,
 };
 use cursor::CursorLayout;
@@ -79,7 +78,6 @@ impl TerminalElement {
             }
         });
     }
-
 }
 
 impl Element for TerminalElement {
@@ -147,8 +145,9 @@ impl Element for TerminalElement {
             terminal.sync();
         });
 
-        let theme = Theme::get(cx);
-        let content = &self.terminal.read(cx).last_content;
+        let terminal = self.terminal.read(cx);
+        let theme = terminal.theme(cx);
+        let content = &terminal.last_content;
         let (rects, batched_text_runs) = layout_grid(
             &content.cells,
             content.display_offset,
@@ -190,6 +189,7 @@ impl Element for TerminalElement {
                     size(width.ceil(), line_height),
                 ),
                 shape: content.cursor.shape,
+                color: theme.cursor,
                 focused: self.focused,
                 text,
             }
@@ -219,7 +219,8 @@ impl Element for TerminalElement {
         self.register_mouse_listeners(layout.hitbox.clone(), window);
 
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            window.paint_quad(fill(bounds, Theme::get(cx).terminal_background));
+            let background = self.terminal.read(cx).theme(cx).terminal_background;
+            window.paint_quad(fill(bounds, background));
 
             let origin = layout.dimensions.bounds.origin;
             window.handle_input(

@@ -24,7 +24,7 @@ use alacritty_terminal::{
     sync::FairMutex,
     term::TermMode,
 };
-use gpui::{EventEmitter, Keystroke, Task};
+use gpui::{App, EventEmitter, Keystroke, Task, WindowAppearance};
 
 pub use bounds::TerminalBounds;
 pub use builder::TerminalBuilder;
@@ -33,6 +33,8 @@ pub use process::foreground_process;
 
 use builder::ZedListener;
 use keys::to_esc_str;
+
+use crate::{settings::ThemeSettings, theme::Theme};
 
 /// events emitted to terminal view
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +59,9 @@ pub struct Terminal {
     title: String,
     /// pid of the shell running in the pty
     pub shell_pid: u32,
+    /// color scheme from the profile, global theme when none
+    theme_settings: Option<ThemeSettings>,
+    theme: Option<Theme>,
     _event_loop_task: Task<()>,
 }
 
@@ -69,6 +74,19 @@ impl Terminal {
         } else {
             self.title.clone()
         }
+    }
+
+    /// profile theme when it has one, otherwise the global theme
+    pub fn theme<'a>(&'a self, cx: &'a App) -> &'a Theme {
+        self.theme.as_ref().unwrap_or_else(|| Theme::get(cx))
+    }
+
+    /// load the profile theme for this system appearance
+    pub fn apply_theme(&mut self, appearance: WindowAppearance) {
+        self.theme = self
+            .theme_settings
+            .as_ref()
+            .map(|settings| Theme::for_appearance(settings, appearance));
     }
 
     fn write_to_pty(&self, input: impl Into<Cow<'static, [u8]>>) {
@@ -165,10 +183,23 @@ mod tests {
     use super::{
         Terminal, TerminalBounds, TerminalBuilder, foreground_process, process::ForegroundProcess,
     };
-    use crate::settings::{CursorShape, Shell, TerminalSettings};
+    use crate::settings::{CursorShape, Profile, Settings, Shell, TerminalSettings};
 
     pub(super) fn spawn(settings: &TerminalSettings) -> TerminalBuilder {
-        let mut builder = TerminalBuilder::new(settings, 0).expect("failed to spawn shell");
+        spawn_with(settings, Settings::default().default_profile())
+    }
+
+    /// default profile running `command`
+    pub(super) fn profile(command: Shell) -> Profile {
+        Profile {
+            command,
+            ..Settings::default().default_profile().clone()
+        }
+    }
+
+    pub(super) fn spawn_with(settings: &TerminalSettings, profile: &Profile) -> TerminalBuilder {
+        let mut builder =
+            TerminalBuilder::new(settings, profile, 0).expect("failed to spawn shell");
         // 80x24 grid, a real window would size it in prepaint
         builder.terminal.set_size(TerminalBounds::new(
             px(20.),
@@ -229,15 +260,65 @@ mod tests {
 
     #[test]
     fn configured_shell_is_launched() {
-        let settings = TerminalSettings {
-            shell: Shell::WithArguments {
-                program: "/bin/sh".into(),
-                args: vec!["-c".into(), "echo from_settings_$((2+3)); sleep 5".into()],
-            },
-            ..TerminalSettings::default()
-        };
-        let mut builder = spawn(&settings);
+        let profile = profile(Shell::WithArguments {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "echo from_settings_$((2+3)); sleep 5".into()],
+        });
+        let mut builder = spawn_with(&TerminalSettings::default(), &profile);
         wait_for_text(&mut builder.terminal, "from_settings_5");
+    }
+
+    #[test]
+    fn profile_env_and_working_directory_reach_shell() {
+        let home = std::env::var("HOME").unwrap();
+        let mut profile = profile(Shell::WithArguments {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "echo \"env=$KUTERM_TEST:$TERM pwd=$(pwd)=\"; sleep 5".into(),
+            ],
+        });
+        profile.working_directory = Some("~".into());
+        profile
+            .env
+            .insert("KUTERM_TEST".into(), "from_profile".into());
+        // profile env overrides kuterm's own
+        profile.env.insert("TERM".into(), "dumb".into());
+        let mut builder = spawn_with(&TerminalSettings::default(), &profile);
+        wait_for_text(
+            &mut builder.terminal,
+            &format!("env=from_profile:dumb pwd={home}="),
+        );
+
+        profile.working_directory = Some("/tmp".into());
+        let mut builder = spawn_with(&TerminalSettings::default(), &profile);
+        wait_for_text(&mut builder.terminal, "pwd=/tmp=");
+    }
+
+    #[test]
+    fn profile_theme_follows_appearance() {
+        use gpui::WindowAppearance;
+
+        use crate::{
+            settings::{ThemeMode, ThemeSettings},
+            theme::Theme,
+        };
+
+        let mut builder = spawn(&TerminalSettings::default());
+        builder.terminal.apply_theme(WindowAppearance::Light);
+        assert_eq!(builder.terminal.theme, None);
+
+        let mut profile = profile(Shell::System);
+        profile.theme = Some(ThemeSettings {
+            mode: ThemeMode::System,
+            dark: None,
+            light: None,
+        });
+        let mut builder = spawn_with(&TerminalSettings::default(), &profile);
+        builder.terminal.apply_theme(WindowAppearance::Light);
+        assert_eq!(builder.terminal.theme, Some(Theme::bundled(false)));
+        builder.terminal.apply_theme(WindowAppearance::Dark);
+        assert_eq!(builder.terminal.theme, Some(Theme::bundled(true)));
     }
 
     #[test]
@@ -306,14 +387,11 @@ mod tests {
 
     #[test]
     fn sync_skips_unchanged_grid_and_reuses_cell_buffer() {
-        let settings = TerminalSettings {
-            shell: Shell::WithArguments {
-                program: "/bin/sh".into(),
-                args: vec!["-c".into(), "echo quiet_ready; sleep 5".into()],
-            },
-            ..TerminalSettings::default()
-        };
-        let mut builder = spawn(&settings);
+        let profile = profile(Shell::WithArguments {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "echo quiet_ready; sleep 5".into()],
+        });
+        let mut builder = spawn_with(&TerminalSettings::default(), &profile);
         let terminal = &mut builder.terminal;
         wait_for_text(terminal, "quiet_ready");
         // let the last wakeup land, nothing prints after that

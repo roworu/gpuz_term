@@ -1,7 +1,10 @@
 //! drawing the workspace: tab bar on top, active terminal below
 // TODO: need a setting on where to put tabs (top, bottom, left?, right?)
 
-use gpui::{Context, Div, ScrollHandle, Stateful, Window, div, prelude::*, px, rems};
+use gpui::{
+    AnyElement, Context, Div, MouseButton, ScrollHandle, Stateful, Window, anchored, deferred, div,
+    prelude::*, px, rems,
+};
 
 use super::Workspace;
 use crate::{
@@ -104,6 +107,50 @@ impl Workspace {
                     })),
             )
     }
+
+    /// profile list opened with a right click on "+", picking one opens a tab with it
+    fn render_profile_menu(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let position = self.profile_menu?;
+        let theme = Theme::get(cx);
+        let items = Settings::get(cx)
+            .profiles
+            .iter()
+            .enumerate()
+            .map(|(ix, profile)| {
+                div()
+                    .id(("profile", ix))
+                    .debug_selector(move || format!("profile-{ix}"))
+                    .px_3()
+                    .py_1()
+                    .whitespace_nowrap()
+                    .hover(|item| item.bg(theme.tab_active_background))
+                    .child(profile.name.clone())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.profile_menu = None;
+                        let profile = Settings::get(cx).profiles[ix].clone();
+                        this.add_profile_tab(&profile, window, cx);
+                    }))
+            });
+        let menu = div()
+            .id("profile-menu")
+            .flex()
+            .flex_col()
+            .py_1()
+            .bg(theme.tab_bar_background)
+            .border_1()
+            .border_color(theme.border)
+            .text_color(theme.text)
+            // keeps clicks from reaching the terminal below
+            .occlude()
+            .children(items)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.profile_menu = None;
+                cx.notify();
+            }));
+        Some(
+            deferred(anchored().position(position).snap_to_window().child(menu)).into_any_element(),
+        )
+    }
 }
 
 impl Render for Workspace {
@@ -119,15 +166,35 @@ impl Render for Workspace {
         let tab_row = tab_row(&self.tab_scroll)
             .when(hug_tabs, |row| row.flex_initial())
             .children((0..self.tabs.len()).map(|ix| self.render_tab(ix, cx)));
+        let has_profiles = settings.profiles.len() > 1;
         let new_tab = div()
             .id("new-tab")
+            .debug_selector(|| "new-tab".into())
             .flex()
             .items_center()
             .px_3()
             .text_color(theme.text_muted)
             .hover(|button| button.text_color(theme.text))
             .child("+")
-            .on_click(cx.listener(|this, _, window, cx| this.add_tab(window, cx)));
+            .on_click(cx.listener(|this, _, window, cx| this.add_tab(window, cx)))
+            .when(has_profiles, |button| {
+                button
+                    // hints that a right click picks another profile
+                    .child(
+                        div()
+                            .debug_selector(|| "profile-hint".into())
+                            .ml_0p5()
+                            .text_xs()
+                            .child("▾"),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                            this.profile_menu = Some(event.position);
+                            cx.notify();
+                        }),
+                    )
+            });
         div()
             .key_context("Workspace")
             .on_action(cx.listener(Self::new_tab))
@@ -162,6 +229,7 @@ impl Render for Workspace {
                     .get(self.active)
                     .map(|tab| div().flex_1().min_h_0().child(tab.view.clone())),
             )
+            .children(self.render_profile_menu(cx))
     }
 }
 

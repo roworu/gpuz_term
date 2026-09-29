@@ -3,6 +3,7 @@
 mod keybindings;
 mod options;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use gpui::{App, Global};
@@ -29,6 +30,7 @@ pub struct Settings {
     pub default_title: String,
     pub theme: ThemeSettings,
     pub terminal: TerminalSettings,
+    pub profiles: Vec<Profile>,
 }
 
 impl Default for Settings {
@@ -49,7 +51,6 @@ pub struct ThemeSettings {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct TerminalSettings {
-    pub shell: Shell,
     pub font_family: String,
     pub font_size: f32,
     pub line_height: LineHeight,
@@ -60,6 +61,23 @@ impl Default for TerminalSettings {
     fn default() -> Self {
         Settings::default().terminal
     }
+}
+
+/// what a new tab starts with
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct Profile {
+    pub name: String,
+    /// opened by the new tab action and a left click on "+"
+    #[serde(default)]
+    pub default: bool,
+    pub command: Shell,
+    /// folder to start in, kuterm's own folder when none
+    pub working_directory: Option<PathBuf>,
+    /// color scheme of the terminal, global theme when none
+    pub theme: Option<ThemeSettings>,
+    /// extra environment variables for the command
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 impl Global for Settings {}
@@ -141,7 +159,33 @@ impl Settings {
             terminal.line_height = limit("terminal.line_height", value, LINE_HEIGHT_RANGE)
                 .map_or(defaults.terminal.line_height, LineHeight::Custom);
         }
+        if settings.profiles.is_empty() {
+            eprintln!("profiles is empty, using the default profiles");
+            settings.profiles = defaults.profiles;
+        }
+        // exactly one profile is the default, the first marked one wins
+        match settings.profiles.iter().position(|profile| profile.default) {
+            Some(first) => {
+                let (head, rest) = settings.profiles.split_at_mut(first + 1);
+                for profile in rest.iter_mut().filter(|profile| profile.default) {
+                    eprintln!(
+                        "profile {:?} is also default, using {:?}",
+                        profile.name, head[first].name
+                    );
+                    profile.default = false;
+                }
+            }
+            None => settings.profiles[0].default = true,
+        }
         Ok(settings)
+    }
+
+    /// profile opened by the new tab action
+    pub fn default_profile(&self) -> &Profile {
+        self.profiles
+            .iter()
+            .find(|profile| profile.default)
+            .unwrap_or(&self.profiles[0])
     }
 
     /// load settings from the settings file, using defaults when it is missing or invalid
@@ -222,7 +266,7 @@ pub(crate) mod tests {
             settings.terminal.font_family,
             "JetBrainsMonoNL Nerd Font Mono"
         );
-        assert_eq!(settings.terminal.shell, Shell::System);
+        assert_eq!(settings.default_profile().command, Shell::System);
         assert_eq!(settings.terminal.line_height.value(), 1.3);
         assert_eq!(settings.terminal.cursor_shape, CursorShape::Bar);
     }
@@ -243,10 +287,13 @@ pub(crate) mod tests {
                 // comments are allowed
                 "ui_font_family": "JetBrainsMonoNL Nerd Font Mono",
                 "ui_font_size": 16, // inline comments too
-                "terminal": {
-                    "shell": {
+                "profiles": [{
+                    "name": "bash",
+                    "command": {
                         "with_arguments": { "program": "/bin/bash", "args": ["--login"] }
                     },
+                }],
+                "terminal": {
                     "font_family": "JetBrainsMonoNL Nerd Font Mono",
                     "font_size": 16,
                     "line_height": { "custom": 2 },
@@ -258,7 +305,7 @@ pub(crate) mod tests {
         assert_eq!(settings.ui_font_family, "JetBrainsMonoNL Nerd Font Mono");
         assert_eq!(settings.ui_font_size, 16.);
         assert_eq!(
-            settings.terminal.shell,
+            settings.default_profile().command,
             Shell::WithArguments {
                 program: "/bin/bash".into(),
                 args: vec!["--login".into()],
@@ -275,12 +322,12 @@ pub(crate) mod tests {
 
     #[test]
     fn parses_shell_variants() {
-        let parse = |json: &str| Settings::parse(json).unwrap().terminal.shell;
-        assert_eq!(parse(r#"{"terminal": {"shell": "system"}}"#), Shell::System);
-        assert_eq!(
-            parse(r#"{"terminal": {"shell": {"program": "zsh"}}}"#),
-            Shell::Program("zsh".into())
-        );
+        let parse = |command: &str| {
+            let json = format!(r#"{{"profiles": [{{"name": "a", "command": {command}}}]}}"#);
+            Settings::parse(&json).unwrap().profiles[0].command.clone()
+        };
+        assert_eq!(parse(r#""system""#), Shell::System);
+        assert_eq!(parse(r#"{"program": "zsh"}"#), Shell::Program("zsh".into()));
     }
 
     #[test]
@@ -375,8 +422,13 @@ pub(crate) mod tests {
             r#"{"ui_font_size": "big"}"#,
             r#"{"terminal": {"cursor_shape": "triangle"}}"#,
             r#"{"terminal": {"line_height": "tall"}}"#,
-            r#"{"terminal": {"shell": {"unknown": "zsh"}}}"#,
-            r#"{"terminal": {"shell": {"with_arguments": {"program": "bash"}}}}"#,
+            r#"{"profiles": [{"name": "a", "command": {"unknown": "zsh"}}]}"#,
+            r#"{"profiles": [{"name": "a", "command": {"with_arguments": {"program": "bash"}}}]}"#,
+            r#"{"profiles": [{"name": "a"}]}"#,
+            r#"{"profiles": [{"command": "system"}]}"#,
+            r#"{"profiles": [{"name": "a", "command": "system", "env": {"A": 1}}]}"#,
+            r#"{"profiles": [{"name": "a", "command": "system", "theme": "dark"}]}"#,
+            r#"{"profiles": {"name": "a", "command": "system"}}"#,
             r#"{"theme": "dark"}"#,
             r#"{"theme": {"mode": "auto"}}"#,
             r#"{"theme": {"mode": null}}"#,
@@ -494,5 +546,87 @@ pub(crate) mod tests {
         );
         let settings = Settings::parse(r#"{"tab_title": ["folder"]}"#).unwrap();
         assert_eq!(settings.tab_title, vec![TabTitleBlock::Folder]);
+    }
+
+    #[test]
+    fn bundled_settings_have_one_default_profile() {
+        let settings = Settings::default();
+        assert_eq!(settings.profiles.len(), 1);
+        let profile = settings.default_profile();
+        assert!(profile.default);
+        assert_eq!(profile.command, Shell::System);
+        assert_eq!(profile.working_directory, None);
+        assert_eq!(profile.theme, None);
+        assert!(profile.env.is_empty());
+    }
+
+    #[test]
+    fn profile_optional_keys_can_be_left_out() {
+        let settings = Settings::parse(
+            r#"{"profiles": [
+                {"name": "a", "command": "system"},
+                {
+                    "name": "b",
+                    "default": true,
+                    "command": {"program": "zsh"},
+                    "working_directory": "~/src",
+                    "theme": {"mode": "dark", "dark": "themes/b.jsonc"},
+                    "env": {"EDITOR": "vim"},
+                },
+            ]}"#,
+        )
+        .unwrap();
+        let [a, b] = &settings.profiles[..] else {
+            panic!("expected two profiles");
+        };
+        assert!(!a.default);
+        assert_eq!(a.working_directory, None);
+        assert_eq!(a.theme, None);
+        assert!(a.env.is_empty());
+        assert_eq!(settings.default_profile(), b);
+        assert_eq!(b.command, Shell::Program("zsh".into()));
+        assert_eq!(b.working_directory, Some(PathBuf::from("~/src")));
+        let theme = b.theme.as_ref().unwrap();
+        assert_eq!(theme.mode, ThemeMode::Dark);
+        assert_eq!(theme.dark, Some(PathBuf::from("themes/b.jsonc")));
+        assert_eq!(theme.light, None);
+        assert_eq!(b.env["EDITOR"], "vim");
+    }
+
+    #[test]
+    fn exactly_one_profile_is_default() {
+        let a = r#"{"name": "a", "command": "system"}"#;
+        let a_default = r#"{"name": "a", "default": true, "command": "system"}"#;
+        let b = r#"{"name": "b", "command": "system"}"#;
+        let b_default = r#"{"name": "b", "default": true, "command": "system"}"#;
+        let c_default = r#"{"name": "c", "default": true, "command": "system"}"#;
+        // default flags of the parsed profiles, in order
+        let parse = |profiles: &[&str]| -> Vec<bool> {
+            let json = format!(r#"{{"profiles": [{}]}}"#, profiles.join(","));
+            let settings = Settings::parse(&json).unwrap();
+            settings
+                .profiles
+                .iter()
+                .map(|profile| profile.default)
+                .collect()
+        };
+        // none marked, the first one is used
+        assert_eq!(parse(&[a, b]), [true, false]);
+        assert_eq!(parse(&[b_default]), [true]);
+        assert_eq!(parse(&[a, b_default]), [false, true]);
+        // several marked, the first marked one wins
+        assert_eq!(parse(&[a, b_default, c_default]), [false, true, false]);
+        assert_eq!(
+            parse(&[a_default, b_default, c_default]),
+            [true, false, false]
+        );
+    }
+
+    #[test]
+    fn empty_profiles_use_bundled_ones() {
+        assert_eq!(
+            Settings::parse(r#"{"profiles": []}"#).unwrap().profiles,
+            Settings::default().profiles
+        );
     }
 }

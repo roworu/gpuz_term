@@ -10,14 +10,14 @@ use futures::{
     channel::mpsc::{UnboundedSender, unbounded},
 };
 use gpui::{
-    Action, App, Context, Entity, EntityId, Focusable, ScrollHandle, Subscription, Task, Window,
-    actions, prelude::*,
+    Action, App, Context, Entity, EntityId, Focusable, Pixels, Point, ScrollHandle, Subscription,
+    Task, Window, actions, prelude::*,
 };
 
 use tab_title::TitleInputs;
 
 use crate::{
-    settings::{Settings, TabTitleBlock},
+    settings::{Profile, Settings, TabTitleBlock},
     terminal::{Event, TerminalBuilder},
     theme::Theme,
     ui::terminal_view::TerminalView,
@@ -55,6 +55,8 @@ pub struct Workspace {
     tab_scroll: ScrollHandle,
     /// built from `window_title` blocks for the active tab
     window_title: String,
+    /// where the profile menu was opened, none while it is closed
+    profile_menu: Option<Point<Pixels>>,
     refresh_titles: UnboundedSender<()>,
     _title_task: Task<()>,
 }
@@ -107,11 +109,16 @@ impl Workspace {
             active: 0,
             tab_scroll: ScrollHandle::new(),
             window_title: String::new(),
+            profile_menu: None,
             refresh_titles,
             _title_task: title_task,
         };
-        cx.observe_window_appearance(window, |_, window, cx| {
+        cx.observe_window_appearance(window, |this: &mut Self, window, cx| {
             Theme::apply(window.appearance(), cx);
+            for tab in &this.tabs {
+                let terminal = tab.view.read(cx).terminal().clone();
+                terminal.update(cx, |terminal, _| terminal.apply_theme(window.appearance()));
+            }
             // terminal views may be cached, force redraw everything with new colors
             window.refresh();
         })
@@ -121,15 +128,24 @@ impl Workspace {
     }
 
     fn add_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let profile = Settings::get(cx).default_profile().clone();
+        self.add_profile_tab(&profile, window, cx);
+    }
+
+    fn add_profile_tab(&mut self, profile: &Profile, window: &mut Window, cx: &mut Context<Self>) {
         let window_id = window.window_handle().window_id().as_u64();
-        let builder = match TerminalBuilder::new(&Settings::get(cx).terminal, window_id) {
+        let builder = match TerminalBuilder::new(&Settings::get(cx).terminal, profile, window_id) {
             Ok(builder) => builder,
             Err(error) => {
                 eprintln!("failed to spawn terminal: {error:#}");
                 return;
             }
         };
-        let terminal = cx.new(|cx| builder.subscribe(cx));
+        let terminal = cx.new(|cx| {
+            let mut terminal = builder.subscribe(cx);
+            terminal.apply_theme(window.appearance());
+            terminal
+        });
         let view = cx.new(|cx| TerminalView::new(terminal.clone(), window, cx));
 
         let subscription = cx.subscribe_in(&terminal, window, {
@@ -284,12 +300,21 @@ mod tests {
         tabs: usize,
         keys: &str,
     ) -> (Entity<Workspace>, &'a mut VisualTestContext) {
+        open_with_settings(cx, tabs, keys, Settings::default())
+    }
+
+    fn open_with_settings<'a>(
+        cx: &'a mut TestAppContext,
+        tabs: usize,
+        keys: &str,
+        settings: Settings,
+    ) -> (Entity<Workspace>, &'a mut VisualTestContext) {
         let keybindings = Keybindings::parse(keys).unwrap();
         // shells wake gpui tasks from alacritty's pty thread, which the test scheduler
         // only tolerates with parking allowed
         cx.executor().allow_parking();
         cx.update(|cx| {
-            cx.set_global(Settings::default());
+            cx.set_global(settings);
             // bundled theme, so no theme files are created
             cx.set_global(Theme::default());
             cx.bind_keys(keybindings.bindings());
@@ -704,5 +729,93 @@ mod tests {
         cx.write_to_clipboard(gpui::ClipboardItem::new_string("before".into()));
         cx.simulate_keystrokes("ctrl-shift-c");
         assert_eq!(clipboard(cx).as_deref(), Some("before"));
+    }
+
+    /// workspace with the tab bar always shown and these profiles
+    fn open_profiles<'a>(
+        cx: &'a mut TestAppContext,
+        profiles: &str,
+    ) -> (Entity<Workspace>, &'a mut VisualTestContext) {
+        let json = format!(r#"{{"hide_bar_for_one_tab": false, "profiles": [{profiles}]}}"#);
+        let (ws, cx) = open_with_settings(cx, 1, "{}", Settings::parse(&json).unwrap());
+        cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(600.)));
+        cx.run_until_parked();
+        (ws, cx)
+    }
+
+    fn right_click(cx: &mut VisualTestContext, position: Point<Pixels>) {
+        cx.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Right,
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Right,
+            click_count: 1,
+        });
+        cx.run_until_parked();
+    }
+
+    fn menu_open(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> bool {
+        ws.update(cx, |ws, _| ws.profile_menu.is_some())
+    }
+
+    #[gpui::test]
+    fn single_profile_has_no_menu(cx: &mut TestAppContext) {
+        let (ws, cx) = open_profiles(cx, r#"{"name": "only", "command": "system"}"#);
+        assert!(cx.debug_bounds("profile-hint").is_none());
+        let plus = cx.debug_bounds("new-tab").unwrap().center();
+        right_click(cx, plus);
+        assert!(!menu_open(&ws, cx));
+        assert!(cx.debug_bounds("profile-0").is_none());
+        assert_eq!(views(&ws, cx).len(), 1);
+    }
+
+    #[gpui::test]
+    fn right_click_on_plus_opens_picked_profile(cx: &mut TestAppContext) {
+        let (ws, cx) = open_profiles(
+            cx,
+            r#"{"name": "main", "default": true, "command": "system"},
+               {"name": "other", "command": {"with_arguments": {
+                   "program": "/bin/sh", "args": ["-c", "echo \"from_$PICKED\"; sleep 5"]}},
+                "env": {"PICKED": "other"}}"#,
+        );
+        assert!(cx.debug_bounds("profile-hint").is_some());
+        let plus = cx.debug_bounds("new-tab").unwrap().center();
+
+        // a click outside closes the menu without a new tab
+        right_click(cx, plus);
+        assert!(menu_open(&ws, cx));
+        assert!(cx.debug_bounds("profile-1").is_some());
+        let outside = point(gpui::px(450.), gpui::px(400.));
+        click(cx, outside, 1);
+        release(cx, outside);
+        cx.run_until_parked();
+        assert!(!menu_open(&ws, cx));
+        assert_eq!(views(&ws, cx).len(), 1);
+
+        right_click(cx, plus);
+        let item = cx.debug_bounds("profile-1").unwrap().center();
+        click(cx, item, 1);
+        release(cx, item);
+        cx.run_until_parked();
+        assert!(!menu_open(&ws, cx));
+        assert_eq!(views(&ws, cx).len(), 2);
+        assert_eq!(current(&ws, cx), 1);
+        let terminal = terminal(&ws, cx, 1);
+        wait_until(cx, "picked profile never ran", |cx| {
+            terminal.read_with(cx, |t, _| line_starting_with(t, "from_other").is_some())
+        });
+
+        // a left click still opens the default profile, "+" moved after the new tab
+        let plus = cx.debug_bounds("new-tab").unwrap().center();
+        click(cx, plus, 1);
+        release(cx, plus);
+        cx.run_until_parked();
+        assert_eq!(views(&ws, cx).len(), 3);
     }
 }

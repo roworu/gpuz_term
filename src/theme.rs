@@ -97,7 +97,11 @@ impl Theme {
 
     /// set active theme from settings mode and system appearance
     pub fn apply(appearance: WindowAppearance, cx: &mut App) {
-        let settings = &Settings::get(cx).theme;
+        cx.set_global(Self::for_appearance(&Settings::get(cx).theme, appearance));
+    }
+
+    /// theme picked by settings mode and system appearance
+    pub fn for_appearance(settings: &ThemeSettings, appearance: WindowAppearance) -> Self {
         let dark = match settings.mode {
             ThemeMode::System => {
                 matches!(
@@ -108,7 +112,7 @@ impl Theme {
             ThemeMode::Dark => true,
             ThemeMode::Light => false,
         };
-        cx.set_global(Self::load(settings, dark));
+        Self::load(settings, dark)
     }
 
     /// active theme
