@@ -193,6 +193,30 @@ impl Workspace {
             deferred(anchored().position(position).snap_to_window().child(menu)).into_any_element(),
         )
     }
+
+    /// command palette or about page, centered near the top like in zed
+    fn render_overlay(&self) -> Option<AnyElement> {
+        let view = match (&self.palette, &self.about) {
+            (Some(palette), _) => palette.clone().into_any_element(),
+            (_, Some(about)) => about.clone().into_any_element(),
+            _ => return None,
+        };
+        Some(
+            deferred(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .flex()
+                    .justify_center()
+                    .items_start()
+                    .pt(rems(4.))
+                    .child(view),
+            )
+            .into_any_element(),
+        )
+    }
 }
 
 impl Render for Workspace {
@@ -243,6 +267,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::next_tab))
             .on_action(cx.listener(Self::activate_tab_action))
+            .on_action(cx.listener(Self::toggle_command_palette))
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -272,6 +298,7 @@ impl Render for Workspace {
                     .map(|tab| div().flex_1().min_h_0().child(tab.view.clone())),
             )
             .children(self.render_profile_menu(cx))
+            .children(self.render_overlay())
     }
 }
 

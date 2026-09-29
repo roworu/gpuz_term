@@ -1,5 +1,6 @@
 //! user settings, read from a jsonc file
 
+mod commands;
 mod keybindings;
 mod options;
 mod tab_icons;
@@ -12,6 +13,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json_lenient::Value;
 
+pub use commands::{Command, CommandAction, Commands};
 pub use keybindings::Keybindings;
 pub use options::{
     CursorShape, LineHeight, NewTabButton, ScrollEasing, ScrollbarEnable, ScrollbarPlacement,
@@ -37,6 +39,7 @@ pub struct Settings {
     pub theme: ThemeSettings,
     pub terminal: TerminalSettings,
     pub profiles: Vec<Profile>,
+    pub command_palette: CommandPaletteSettings,
 }
 
 impl Default for Settings {
@@ -53,6 +56,11 @@ pub struct ThemeSettings {
     pub dark: Option<PathBuf>,
     /// custom light theme file, bundled one when none
     pub light: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct CommandPaletteSettings {
+    pub enable: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]

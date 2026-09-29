@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use serde_json_lenient::Value;
 
-use crate::settings::{Keybindings, Settings, TabIcons, ThemeMode};
+use crate::settings::{Commands, Keybindings, Settings, TabIcons, ThemeMode};
 use crate::theme::Theme;
 
 pub const USAGE: &str = "usage: kuterm [options]
@@ -97,10 +97,15 @@ impl Cli {
             .into_iter()
             .flatten()
             .map(|path| Theme::resolve(&path));
-        let files = [Settings::path(), Keybindings::path(), TabIcons::path()]
-            .into_iter()
-            .flatten()
-            .chain(themes);
+        let files = [
+            Settings::path(),
+            Keybindings::path(),
+            TabIcons::path(),
+            Commands::path(),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(themes);
         for path in files {
             if let Err(error) = std::fs::remove_file(&path)
                 && error.kind() != std::io::ErrorKind::NotFound

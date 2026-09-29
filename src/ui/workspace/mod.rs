@@ -11,20 +11,27 @@ use futures::{
     channel::mpsc::{UnboundedSender, unbounded},
 };
 use gpui::{
-    Action, App, Context, Entity, EntityId, Focusable, Pixels, Point, ScrollHandle, Subscription,
-    Task, Window, actions, prelude::*,
+    Action, App, Context, DismissEvent, Entity, EntityId, Focusable, ManagedView, Pixels, Point,
+    ScrollHandle, Subscription, Task, Window, actions, prelude::*,
 };
 
 use tab_title::TitleInputs;
 
 use crate::{
-    settings::{Profile, Settings, TabIconSettings, TabIcons, TabTitleBlock},
+    cli::Cli,
+    settings::{
+        Command, CommandAction, Commands, Keybindings, Profile, Settings, TabIconSettings,
+        TabIcons, TabTitleBlock,
+    },
     terminal::{Event, TerminalBuilder},
     theme::Theme,
-    ui::terminal_view::TerminalView,
+    ui::{
+        command_palette::{About, CommandPalette},
+        terminal_view::TerminalView,
+    },
 };
 
-actions!(workspace, [NewTab, CloseTab, NextTab]);
+actions!(workspace, [NewTab, CloseTab, NextTab, ToggleCommandPalette]);
 
 /// activate tab at this 0 based index
 #[derive(Clone, PartialEq, Action)]
@@ -65,6 +72,11 @@ pub struct Workspace {
     window_title: String,
     /// where the profile menu was opened, none while it is closed
     profile_menu: Option<Point<Pixels>>,
+    /// open command palette, none while it is closed
+    palette: Option<Entity<CommandPalette>>,
+    /// open about page, none while it is closed
+    about: Option<Entity<About>>,
+    _overlay_subscriptions: Vec<Subscription>,
     refresh_titles: UnboundedSender<()>,
     _title_task: Task<()>,
 }
@@ -128,17 +140,14 @@ impl Workspace {
             tab_scroll: ScrollHandle::new(),
             window_title: String::new(),
             profile_menu: None,
+            palette: None,
+            about: None,
+            _overlay_subscriptions: Vec::new(),
             refresh_titles,
             _title_task: title_task,
         };
         cx.observe_window_appearance(window, |this: &mut Self, window, cx| {
-            Theme::apply(window.appearance(), cx);
-            for tab in &this.tabs {
-                let terminal = tab.view.read(cx).terminal().clone();
-                terminal.update(cx, |terminal, _| terminal.apply_theme(window.appearance()));
-            }
-            // terminal views may be cached, force redraw everything with new colors
-            window.refresh();
+            this.reload_themes(window, cx);
         })
         .detach();
         this.add_tab(window, cx);
@@ -218,6 +227,121 @@ impl Workspace {
             self.active.min(self.tabs.len() - 1)
         };
         self.activate_tab(active, window, cx);
+    }
+
+    /// read theme files again and recolor the ui and every terminal
+    fn reload_themes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        Theme::apply(window.appearance(), cx);
+        for tab in &self.tabs {
+            let terminal = tab.view.read(cx).terminal().clone();
+            terminal.update(cx, |terminal, _| terminal.apply_theme(window.appearance()));
+        }
+        // terminal views may be cached, force redraw everything with new colors
+        window.refresh();
+    }
+
+    fn reload_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut settings = Settings::load();
+        Cli::get().apply(&mut settings);
+        cx.set_global(settings);
+        // theme mode and theme files are picked in settings
+        self.reload_themes(window, cx);
+        self.refresh_titles();
+    }
+
+    fn reload_keybindings(&mut self, cx: &mut Context<Self>) {
+        cx.clear_key_bindings();
+        cx.bind_keys(Keybindings::load().bindings());
+    }
+
+    fn reload_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.set_global(TabIcons::load());
+        cx.set_global(Commands::load());
+        self.reload_keybindings(cx);
+        self.reload_settings(window, cx);
+    }
+
+    /// run command actions in order against the active tab
+    fn run_command(&mut self, command: &Command, window: &mut Window, cx: &mut Context<Self>) {
+        for action in &command.actions {
+            // closing the last tab quits, nothing is left to act on
+            if self.tabs.is_empty() {
+                return;
+            }
+            match action {
+                CommandAction::About => {
+                    let about = cx.new(About::new);
+                    self.open_overlay(&about, window, cx);
+                    self.about = Some(about);
+                }
+                CommandAction::ReloadSettings => self.reload_settings(window, cx),
+                CommandAction::ReloadThemes => self.reload_themes(window, cx),
+                CommandAction::ReloadKeybindings => self.reload_keybindings(cx),
+                CommandAction::ReloadAll => self.reload_all(window, cx),
+                CommandAction::NewTab => self.add_tab(window, cx),
+                CommandAction::CloseTab => self.close_tab_at(self.active, window, cx),
+                CommandAction::NextTab => self.next_tab(&NextTab, window, cx),
+                CommandAction::Type(text) => {
+                    let terminal = self.tabs[self.active].view.read(cx).terminal().clone();
+                    let bytes = text.clone().into_bytes();
+                    terminal.update(cx, |terminal, _| terminal.input(bytes));
+                }
+            }
+        }
+    }
+
+    // closes whatever floats over the terminal first, only one overlay is open at a time
+    fn open_overlay<V: ManagedView>(
+        &mut self,
+        view: &Entity<V>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_overlay(window, cx);
+        self._overlay_subscriptions =
+            vec![
+                cx.subscribe_in(view, window, |this, _, _: &DismissEvent, window, cx| {
+                    this.close_overlay(window, cx)
+                }),
+            ];
+        view.focus_handle(cx).focus(window, cx);
+    }
+
+    fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette = None;
+        self.about = None;
+        self._overlay_subscriptions.clear();
+        if let Some(tab) = self.tabs.get(self.active) {
+            tab.view.focus_handle(cx).focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn toggle_command_palette(
+        &mut self,
+        _: &ToggleCommandPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.palette.is_some() {
+            self.close_overlay(window, cx);
+            return;
+        }
+        if !Settings::get(cx).command_palette.enable {
+            return;
+        }
+        let commands = Commands::get(cx).commands.clone();
+        let palette = cx.new(|cx| CommandPalette::new(commands, cx));
+        self.open_overlay(&palette, window, cx);
+        self._overlay_subscriptions.push(cx.subscribe_in(
+            &palette,
+            window,
+            |this, _, command: &Command, window, cx| {
+                this.close_overlay(window, cx);
+                this.run_command(command, window, cx);
+            },
+        ));
+        self.palette = Some(palette);
     }
 
     fn refresh_titles(&self) {
@@ -346,6 +470,7 @@ mod tests {
             // bundled theme, so no theme files are created
             cx.set_global(Theme::default());
             cx.set_global(TabIcons::default());
+            cx.set_global(Commands::default());
             cx.bind_keys(keybindings.bindings());
         });
         let (ws, cx) = cx.add_window_view(Workspace::new);
@@ -995,5 +1120,238 @@ mod tests {
         let json = r#"{"terminal": {"smooth_scroll": {"enable": false}}}"#;
         let (target, terminal, cx) = click_scrollbar(json, cx);
         assert_eq!(scroll_offset(&terminal, cx), target);
+    }
+
+    fn palette_open(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> bool {
+        ws.update(cx, |ws, _| ws.palette.is_some())
+    }
+
+    fn palette_focused(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> bool {
+        ws.update_in(cx, |ws, window, cx| {
+            ws.palette
+                .as_ref()
+                .is_some_and(|palette| palette.focus_handle(cx).is_focused(window))
+        })
+    }
+
+    fn palette_names(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
+        ws.update(cx, |ws, cx| {
+            let palette = ws.palette.as_ref().unwrap().read(cx);
+            palette.matches().iter().map(|c| c.name.clone()).collect()
+        })
+    }
+
+    fn type_keys(cx: &mut VisualTestContext, keystrokes: &str) {
+        cx.run_until_parked();
+        cx.simulate_keystrokes(keystrokes);
+        cx.run_until_parked();
+    }
+
+    fn set_commands(cx: &mut VisualTestContext, json: &str) {
+        let commands = Commands::parse(json).unwrap();
+        cx.update(|_, cx| cx.set_global(commands));
+    }
+
+    #[gpui::test]
+    fn ctrl_shift_p_toggles_palette_and_escape_closes_it(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        type_keys(cx, "ctrl-shift-p");
+        assert!(palette_open(&ws, cx));
+        assert!(palette_focused(&ws, cx));
+        assert!(cx.debug_bounds("command-palette").is_some());
+        assert_eq!(
+            palette_names(&ws, cx).len(),
+            Commands::default().commands.len()
+        );
+
+        type_keys(cx, "escape");
+        assert!(!palette_open(&ws, cx));
+        // focus went back to the active tab
+        assert_eq!(current(&ws, cx), 1);
+
+        type_keys(cx, "ctrl-shift-p");
+        type_keys(cx, "ctrl-shift-p");
+        assert!(!palette_open(&ws, cx));
+        assert_eq!(current(&ws, cx), 1);
+    }
+
+    #[gpui::test]
+    fn disabled_palette_never_opens(cx: &mut TestAppContext) {
+        let settings = Settings::parse(r#"{"command_palette": {"enable": false}}"#).unwrap();
+        let (ws, cx) = open_with_settings(cx, 1, "{}", settings);
+        type_keys(cx, "ctrl-shift-p");
+        assert!(!palette_open(&ws, cx));
+        assert!(cx.debug_bounds("command-palette").is_none());
+    }
+
+    #[gpui::test]
+    fn typing_filters_and_arrows_pick_a_command(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        set_commands(
+            cx,
+            r#"{"commands": [
+                {"name": "first", "actions": ["new_tab"]},
+                {"name": "second", "actions": ["new_tab", "new_tab"]},
+                {"name": "sneaky", "actions": ["new_tab", "new_tab", "new_tab"]},
+            ]}"#,
+        );
+        type_keys(cx, "ctrl-shift-p s");
+        assert_eq!(palette_names(&ws, cx), ["first", "second", "sneaky"]);
+        type_keys(cx, "e");
+        assert_eq!(palette_names(&ws, cx), ["second", "sneaky"]);
+        type_keys(cx, "x");
+        assert!(palette_names(&ws, cx).is_empty());
+        assert!(cx.debug_bounds("command-0").is_none());
+        // enter with nothing matched keeps the palette open
+        type_keys(cx, "enter");
+        assert!(palette_open(&ws, cx));
+        type_keys(cx, "backspace down down down up enter");
+        assert!(!palette_open(&ws, cx));
+        assert_eq!(views(&ws, cx).len(), 3);
+    }
+
+    #[gpui::test]
+    fn click_runs_a_command(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        set_commands(
+            cx,
+            r#"{"commands": [
+                {"name": "one", "actions": ["about"]},
+                {"name": "two", "actions": ["new_tab"]},
+            ]}"#,
+        );
+        type_keys(cx, "ctrl-shift-p");
+        let item = cx.debug_bounds("command-1").unwrap().center();
+        click(cx, item, 1);
+        release(cx, item);
+        cx.run_until_parked();
+        assert!(!palette_open(&ws, cx));
+        assert_eq!(views(&ws, cx).len(), 2);
+    }
+
+    #[gpui::test]
+    fn about_command_shows_page_until_a_key(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        let r = reader(&ws, cx, false, "about");
+        type_keys(cx, "ctrl-shift-p a b o u t enter");
+        assert!(!palette_open(&ws, cx));
+        assert!(ws.update(cx, |ws, _| ws.about.is_some()));
+        assert!(cx.debug_bounds("about").is_some());
+        type_keys(cx, "q");
+        assert!(ws.update(cx, |ws, _| ws.about.is_none()));
+        assert!(cx.debug_bounds("about").is_none());
+        assert_eq!(current(&ws, cx), 0);
+        // keys typed into the palette and the page never reach the shell
+        assert_eq!(finish(&ws, cx, r), Vec::<String>::new());
+    }
+
+    #[gpui::test]
+    fn custom_command_opens_a_tab_and_types_into_it(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        set_commands(
+            cx,
+            r#"{"commands": [{"name": "hello", "actions":
+                ["new_tab", {"type": "printf 'from_%s\\n' palette\n"}]}]}"#,
+        );
+        type_keys(cx, "ctrl-shift-p h e l l o enter");
+        assert_eq!(views(&ws, cx).len(), 2);
+        assert_eq!(current(&ws, cx), 1);
+        let terminal = terminal(&ws, cx, 1);
+        wait_until(cx, "typed command never ran", |cx| {
+            terminal.read_with(cx, |t, _| line_starting_with(t, "from_palette").is_some())
+        });
+    }
+
+    #[gpui::test]
+    fn actions_after_close_tab_use_the_remaining_tab(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        let command = Commands::parse(
+            r#"{"commands": [{"name": "x", "actions": ["close_tab", "next_tab", {"type": "a"}]}]}"#,
+        )
+        .unwrap()
+        .commands
+        .remove(0);
+        ws.update_in(cx, |ws, window, cx| ws.run_command(&command, window, cx));
+        cx.run_until_parked();
+        assert_eq!(views(&ws, cx).len(), 1);
+        assert_eq!(current(&ws, cx), 0);
+    }
+
+    #[gpui::test]
+    fn reload_commands_read_config_files(cx: &mut TestAppContext) {
+        let dir = crate::settings::tests::temp_dir("workspace_reload");
+        let config = dir.join("kuterm");
+        std::fs::create_dir_all(&config).unwrap();
+        crate::settings::tests::with_config_home(&dir, || {
+            let (ws, cx) = open(cx, 1);
+            let run = |cx: &mut VisualTestContext, action: &str| {
+                let json = format!(r#"{{"commands": [{{"name": "x", "actions": ["{action}"]}}]}}"#);
+                let command = Commands::parse(&json).unwrap().commands.remove(0);
+                ws.update_in(cx, |ws, window, cx| ws.run_command(&command, window, cx));
+                cx.run_until_parked();
+            };
+
+            std::fs::write(
+                config.join("keybindings.jsonc"),
+                r#"{"command_palette": "ctrl-shift-k"}"#,
+            )
+            .unwrap();
+            run(cx, "reload_keybindings");
+            type_keys(cx, "ctrl-shift-p");
+            assert!(!palette_open(&ws, cx));
+            type_keys(cx, "ctrl-shift-k");
+            assert!(palette_open(&ws, cx));
+            type_keys(cx, "escape");
+
+            std::fs::write(
+                config.join("settings.jsonc"),
+                r#"{"command_palette": {"enable": false}, "theme": {"mode": "light", "light": null}}"#,
+            )
+            .unwrap();
+            run(cx, "reload_settings");
+            assert!(!cx.update(|_, cx| Settings::get(cx).command_palette.enable));
+            assert_eq!(
+                cx.update(|_, cx| Theme::get(cx).clone()),
+                Theme::bundled(false)
+            );
+            type_keys(cx, "ctrl-shift-k");
+            assert!(!palette_open(&ws, cx));
+
+            std::fs::write(
+                config.join("settings.jsonc"),
+                r#"{"theme": {"mode": "dark", "dark": "themes/mine.jsonc"}}"#,
+            )
+            .unwrap();
+            std::fs::create_dir_all(config.join("themes")).unwrap();
+            std::fs::write(
+                config.join("themes/mine.jsonc"),
+                r##"{"border": "#010203"}"##,
+            )
+            .unwrap();
+            run(cx, "reload_settings");
+            let border = cx.update(|_, cx| Theme::get(cx).border);
+            assert_eq!(border, gpui::rgb(0x010203).into());
+            std::fs::write(
+                config.join("themes/mine.jsonc"),
+                r##"{"border": "#040506"}"##,
+            )
+            .unwrap();
+            run(cx, "reload_themes");
+            let border = cx.update(|_, cx| Theme::get(cx).border);
+            assert_eq!(border, gpui::rgb(0x040506).into());
+
+            std::fs::write(config.join("settings.jsonc"), "{}").unwrap();
+            std::fs::write(config.join("keybindings.jsonc"), "{}").unwrap();
+            std::fs::write(
+                config.join("commands.jsonc"),
+                r#"{"commands": [{"name": "only", "actions": ["new_tab"]}]}"#,
+            )
+            .unwrap();
+            run(cx, "reload_all");
+            assert!(cx.update(|_, cx| Settings::get(cx).command_palette.enable));
+            type_keys(cx, "ctrl-shift-p");
+            assert_eq!(palette_names(&ws, cx), ["only"]);
+        });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

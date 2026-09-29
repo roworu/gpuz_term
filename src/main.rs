@@ -11,7 +11,7 @@ use gpui_platform::application;
 
 use crate::{
     cli::{Cli, USAGE},
-    settings::{Keybindings, Settings, TabIcons},
+    settings::{Commands, Keybindings, Settings, TabIcons},
     theme::Theme,
     ui::workspace::Workspace,
 };
@@ -45,6 +45,7 @@ fn init(cx: &mut App) {
     cli.apply(&mut settings);
     cx.set_global(settings);
     cx.set_global(TabIcons::load());
+    cx.set_global(Commands::load());
     Theme::apply(cx.window_appearance(), cx);
     cx.bind_keys(Keybindings::load().bindings());
 }

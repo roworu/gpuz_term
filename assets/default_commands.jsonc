@@ -1,0 +1,34 @@
+// kuterm command palette commands
+//
+// this file is created with default values on first launch.
+// comments and trailing commas are allowed.
+// if this file is invalid, the bundled commands are used and an error is printed.
+// changes are applied with "reload all configs" or on next launch.
+//
+// the palette opens with the "command_palette" key (ctrl-shift-p by default), typing filters
+// commands by name, enter or a click runs the picked one.
+//
+// each command has a "name" shown in the palette and "actions" run one after another:
+//   "about"                - show a page with the version and links
+//   "reload_settings"      - read settings.jsonc again and apply it
+//   "reload_themes"        - read theme files again and apply them
+//   "reload_keybindings"   - read keybindings.jsonc again and apply it
+//   "reload_all"           - all of the above, plus tab_icons.jsonc and this file
+//   "new_tab"              - open a tab with the default profile
+//   "close_tab"            - close the active tab
+//   "next_tab"             - switch to the tab on the right
+//   { "type": "ls\n" }     - type text into the active tab, "\n" presses enter
+{
+  "commands": [
+    { "name": "about", "actions": ["about"] },
+    { "name": "reload settings", "actions": ["reload_settings"] },
+    { "name": "reload themes", "actions": ["reload_themes"] },
+    { "name": "reload keybindings", "actions": ["reload_keybindings"] },
+    { "name": "reload all configs", "actions": ["reload_all"] },
+    // custom command example: open a new tab and run a command in it
+    {
+      "name": "say hello in a new tab",
+      "actions": ["new_tab", { "type": "echo hello from kuterm\n" }],
+    },
+  ],
+}

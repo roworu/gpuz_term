@@ -24,6 +24,7 @@ config lives in `~/.config/kuterm/` (or whatever is your `$XDG_CONFIG_HOME`) and
 
 - `settings.jsonc`: fonts, tabs, titles, shell, cursor, theme
 - `keybindings.jsonc`: keys for each action, `null` disables
+- `commands.jsonc`: command palette (ctrl-shift-p) commands, add your own there
 - `themes/dark.jsonc`, `themes/light.jsonc`: color shemas
 
 each option described in file with comments, you don't need any external docs to set it up.

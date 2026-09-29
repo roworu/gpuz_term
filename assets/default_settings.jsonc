@@ -46,6 +46,11 @@
   // used by "title" when the running program set none, and as window title when it is empty
   "default_title": "kuterm",
 
+  "command_palette": {
+    // allow opening the command palette with its key, commands are set in commands.jsonc
+    "enable": true,
+  },
+
   "theme": {
     // which theme to use, applied right away when the system switches:
     //   "system" - follow system dark/light preference
