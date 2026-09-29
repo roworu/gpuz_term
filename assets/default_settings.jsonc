@@ -88,6 +88,17 @@
       // hide after this many seconds without scrolling. 0 never hides.
       "auto_hide": 10,
     },
+    // glide to the new position smoothly instead of jumping
+    "smooth_scroll": {
+      "enable": true,
+      // how long one glide takes in milliseconds, from 0 to 1000
+      "duration": 300,
+      // speed curve of the glide:
+      //   "linear"      - same speed all the way
+      //   "ease_out"    - fast start, soft stop
+      //   "ease_in_out" - soft start and soft stop
+      "easing": "ease_out",
+    },
   },
 
   // what new tabs start with. ctrl-shift-t and a click on "+" open the default profile,

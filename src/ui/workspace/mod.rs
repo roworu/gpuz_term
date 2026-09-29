@@ -951,4 +951,49 @@ mod tests {
             "output scrolled the view but the bar stayed hidden"
         );
     }
+
+    fn scroll_offset(terminal: &Entity<Terminal>, cx: &mut VisualTestContext) -> usize {
+        terminal.read_with(cx, |t, _| t.last_content.display_offset)
+    }
+
+    // click on the scrollbar with the given smooth scroll settings, then draw one frame
+    fn click_scrollbar<'a>(
+        json: &str,
+        cx: &'a mut TestAppContext,
+    ) -> (usize, Entity<Terminal>, &'a mut VisualTestContext) {
+        let (ws, cx) = open_with_settings(cx, 1, "{}", Settings::parse(json).unwrap());
+        send_to(&ws, cx, 0, "seq 1 300\r");
+        let terminal = terminal(&ws, cx, 0);
+        wait_until(cx, "output never reached history", |cx| {
+            terminal.read_with(cx, |t, _| t.history_size() > 100)
+        });
+        let view = ws.update(cx, |ws, _| ws.tabs[0].view.clone());
+        view.update(cx, |view, cx| view.scrollbar_down(100, cx));
+        cx.run_until_parked();
+        (100, terminal, cx)
+    }
+
+    #[gpui::test]
+    fn smooth_scroll_glides_to_target(cx: &mut TestAppContext) {
+        let json = r#"{"terminal": {"smooth_scroll": {"enable": true, "duration": 200, "easing": "linear"}}}"#;
+        let (target, terminal, cx) = click_scrollbar(json, cx);
+        let first = scroll_offset(&terminal, cx);
+        assert!(first < target, "jumped straight to {first}");
+        let mut last = first;
+        wait_until(cx, "glide never reached the target", |cx| {
+            cx.update(|window, cx| window.simulate_next_frame(cx));
+            cx.run_until_parked();
+            let offset = scroll_offset(&terminal, cx);
+            assert!(offset >= last, "glide went back from {last} to {offset}");
+            last = offset;
+            offset == target
+        });
+    }
+
+    #[gpui::test]
+    fn disabled_smooth_scroll_jumps(cx: &mut TestAppContext) {
+        let json = r#"{"terminal": {"smooth_scroll": {"enable": false}}}"#;
+        let (target, terminal, cx) = click_scrollbar(json, cx);
+        assert_eq!(scroll_offset(&terminal, cx), target);
+    }
 }

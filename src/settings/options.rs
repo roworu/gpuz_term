@@ -126,3 +126,60 @@ pub enum ScrollbarPlacement {
     Left,
     Right,
 }
+
+/// speed curve of a smooth scroll
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollEasing {
+    Linear,
+    EaseOut,
+    EaseInOut,
+}
+
+impl ScrollEasing {
+    /// share of the distance covered at `t`, both from 0 to 1
+    pub fn apply(&self, t: f32) -> f32 {
+        let t = t.clamp(0., 1.);
+        match self {
+            ScrollEasing::Linear => t,
+            ScrollEasing::EaseOut => 1. - (1. - t).powi(3),
+            ScrollEasing::EaseInOut => {
+                if t < 0.5 {
+                    4. * t.powi(3)
+                } else {
+                    1. - (2. - 2. * t).powi(3) / 2.
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn easing_starts_at_0_and_ends_at_1() {
+        for easing in [
+            ScrollEasing::Linear,
+            ScrollEasing::EaseOut,
+            ScrollEasing::EaseInOut,
+        ] {
+            assert_eq!(easing.apply(0.), 0., "{easing:?}");
+            assert_eq!(easing.apply(1.), 1., "{easing:?}");
+            // out of range time is clamped
+            assert_eq!(easing.apply(-1.), 0., "{easing:?}");
+            assert_eq!(easing.apply(2.), 1., "{easing:?}");
+            let mut last = 0.;
+            for step in 1..=100 {
+                let value = easing.apply(step as f32 / 100.);
+                assert!(value >= last, "{easing:?} goes back at {step}");
+                last = value;
+            }
+        }
+        assert_eq!(ScrollEasing::Linear.apply(0.5), 0.5);
+        assert!(ScrollEasing::EaseOut.apply(0.25) > 0.25);
+        assert!(ScrollEasing::EaseInOut.apply(0.25) < 0.25);
+        assert_eq!(ScrollEasing::EaseInOut.apply(0.5), 0.5);
+    }
+}

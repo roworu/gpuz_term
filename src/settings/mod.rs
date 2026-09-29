@@ -14,8 +14,8 @@ use serde_json_lenient::Value;
 
 pub use keybindings::Keybindings;
 pub use options::{
-    CursorShape, LineHeight, NewTabButton, ScrollbarEnable, ScrollbarPlacement, Shell,
-    TabIconPosition, TabTitleAlign, TabTitleBlock, ThemeMode,
+    CursorShape, LineHeight, NewTabButton, ScrollEasing, ScrollbarEnable, ScrollbarPlacement,
+    Shell, TabIconPosition, TabTitleAlign, TabTitleBlock, ThemeMode,
 };
 pub use tab_icons::TabIcons;
 
@@ -70,6 +70,7 @@ pub struct TerminalSettings {
     pub cursor_shape: CursorShape,
     pub max_history_length: usize,
     pub scrollbar: ScrollbarSettings,
+    pub smooth_scroll: SmoothScrollSettings,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -79,6 +80,21 @@ pub struct ScrollbarSettings {
     pub width: f32,
     /// seconds without scrolling before it hides, 0 never hides
     pub auto_hide: f32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+pub struct SmoothScrollSettings {
+    pub enable: bool,
+    /// milliseconds one glide takes, 0 jumps right away
+    pub duration: f32,
+    pub easing: ScrollEasing,
+}
+
+impl SmoothScrollSettings {
+    /// true when scrolling should glide instead of jump
+    pub fn active(&self) -> bool {
+        self.enable && self.duration > 0.
+    }
 }
 
 impl Default for TerminalSettings {
@@ -115,6 +131,8 @@ const LINE_HEIGHT_RANGE: (f32, f32) = (1., 3.);
 const SCROLLBAR_WIDTH_RANGE: (f32, f32) = (2., 64.);
 // Duration panics on negative or huge seconds, an hour is already "never"
 const AUTO_HIDE_RANGE: (f32, f32) = (0., 3600.);
+// longer glides feel like lag, not smoothness
+const SMOOTH_SCROLL_DURATION_RANGE: (f32, f32) = (0., 1000.);
 
 fn limit(name: &str, value: f32, (min, max): (f32, f32)) -> Option<f32> {
     if value.is_nan() || value < min {
@@ -209,6 +227,13 @@ impl Settings {
             AUTO_HIDE_RANGE,
         )
         .unwrap_or(defaults.terminal.scrollbar.auto_hide);
+        let smooth_scroll = &mut terminal.smooth_scroll;
+        smooth_scroll.duration = limit(
+            "terminal.smooth_scroll.duration",
+            smooth_scroll.duration,
+            SMOOTH_SCROLL_DURATION_RANGE,
+        )
+        .unwrap_or(defaults.terminal.smooth_scroll.duration);
         if settings.profiles.is_empty() {
             eprintln!("profiles is empty, using the default profiles");
             settings.profiles = defaults.profiles;
@@ -807,6 +832,46 @@ pub(crate) mod tests {
         assert_eq!(auto_hide("3600"), 3600.);
         assert_eq!(auto_hide("3601"), 3600.);
         assert_eq!(auto_hide("1e30"), 3600.);
+    }
+
+    #[test]
+    fn parses_smooth_scroll() {
+        let smooth = |json: &str| Settings::parse(json).unwrap().terminal.smooth_scroll;
+        let parsed = smooth(
+            r#"{"terminal": {"smooth_scroll": {"enable": false, "duration": 300, "easing": "linear"}}}"#,
+        );
+        assert_eq!(
+            parsed,
+            SmoothScrollSettings {
+                enable: false,
+                duration: 300.,
+                easing: ScrollEasing::Linear,
+            }
+        );
+        assert!(!parsed.active());
+        let easing = |name: &str| {
+            let json = format!(r#"{{"terminal": {{"smooth_scroll": {{"easing": "{name}"}}}}}}"#);
+            smooth(&json).easing
+        };
+        assert_eq!(easing("ease_out"), ScrollEasing::EaseOut);
+        assert_eq!(easing("ease_in_out"), ScrollEasing::EaseInOut);
+        assert!(
+            Settings::parse(r#"{"terminal": {"smooth_scroll": {"easing": "bounce"}}}"#).is_err()
+        );
+        assert!(Settings::parse(r#"{"terminal": {"smooth_scroll": {"enable": "yes"}}}"#).is_err());
+
+        let duration = |value: &str| {
+            let json = format!(r#"{{"terminal": {{"smooth_scroll": {{"duration": {value}}}}}}}"#);
+            smooth(&json)
+        };
+        let default = Settings::default().terminal.smooth_scroll.duration;
+        assert_eq!(duration("-1").duration, default);
+        assert_eq!(duration("1000").duration, 1000.);
+        assert_eq!(duration("5000").duration, 1000.);
+        // 0 jumps, even when enabled
+        let zero = duration(r#"0, "enable": true"#);
+        assert_eq!(zero.duration, 0.);
+        assert!(!zero.active());
     }
 
     #[test]
