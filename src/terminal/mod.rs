@@ -29,9 +29,9 @@ use gpui::{App, EventEmitter, Keystroke, Task, WindowAppearance};
 pub use bounds::TerminalBounds;
 pub use builder::TerminalBuilder;
 pub use content::{Content, IndexedCell};
-pub use process::{ForegroundProcess, children, foreground_process, process_info};
 #[cfg(test)]
 pub(crate) use process::tests::{Kill, spawn};
+pub use process::{ForegroundProcess, children, foreground_process, process_info};
 
 use builder::ZedListener;
 use keys::to_esc_str;

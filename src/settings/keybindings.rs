@@ -72,7 +72,12 @@ impl Keybindings {
 
     /// load keybindings from the keybindings file, using defaults when it is missing or invalid
     pub fn load() -> Self {
-        load_file(Self::path(), DEFAULT_KEYBINDINGS, "keybindings", Self::parse)
+        load_file(
+            Self::path(),
+            DEFAULT_KEYBINDINGS,
+            "keybindings",
+            Self::parse,
+        )
     }
 
     /// gpui bindings for every enabled action

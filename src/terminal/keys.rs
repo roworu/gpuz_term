@@ -30,9 +30,7 @@ impl TerminalModifiers {
             _ => TerminalModifiers::Other,
         }
     }
-
 }
-
 
 pub(crate) fn to_esc_str(
     keystroke: &Keystroke,

@@ -120,6 +120,10 @@ impl Workspace {
                 theme.text_muted
             })
             .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(ix, window, cx)))
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(move |this, _, window, cx| this.close_tab_at(ix, window, cx)),
+            )
             .child(
                 div()
                     .id(("close-tab", ix))

@@ -839,6 +839,24 @@ mod tests {
     }
 
     #[gpui::test]
+    fn middle_click_closes_tab(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 3);
+        cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(600.)));
+        cx.run_until_parked();
+        let old = views(&ws, cx);
+        let title = cx.debug_bounds("tab-title-1").unwrap().center();
+        cx.simulate_event(MouseDownEvent {
+            position: title,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Middle,
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.run_until_parked();
+        assert_eq!(views(&ws, cx), vec![old[0], old[2]]);
+    }
+
+    #[gpui::test]
     fn single_profile_has_no_menu(cx: &mut TestAppContext) {
         let (ws, cx) = open_profiles(cx, r#"{"name": "only", "command": "system"}"#);
         assert!(cx.debug_bounds("profile-hint").is_none());
