@@ -3,6 +3,7 @@
 mod cursor;
 mod grid;
 mod input_handler;
+mod scrollbar;
 
 use alacritty_terminal::vte::ansi::CursorShape;
 use gpui::{
@@ -13,13 +14,14 @@ use gpui::{
 };
 
 use crate::{
-    settings::Settings,
+    settings::{ScrollbarEnable, ScrollbarPlacement, Settings},
     terminal::{Terminal, TerminalBounds},
     ui::terminal_view::TerminalView,
 };
 use cursor::CursorLayout;
 use grid::{BatchedTextRun, LayoutRect, layout_grid};
 use input_handler::TerminalInputHandler;
+use scrollbar::ScrollbarLayout;
 
 /// everything computed in prepaint that paint needs
 pub struct LayoutState {
@@ -27,6 +29,7 @@ pub struct LayoutState {
     rects: Vec<LayoutRect>,
     batched_text_runs: Vec<BatchedTextRun>,
     cursor: Option<CursorLayout>,
+    scrollbar: Option<(ScrollbarLayout, Hitbox)>,
     dimensions: TerminalBounds,
     font_size: Pixels,
 }
@@ -36,6 +39,8 @@ pub struct TerminalElement {
     terminal_view: Entity<TerminalView>,
     focus: FocusHandle,
     focused: bool,
+    /// false once auto hide kicked in
+    scrollbar_visible: bool,
 }
 
 impl TerminalElement {
@@ -45,13 +50,41 @@ impl TerminalElement {
         terminal_view: Entity<TerminalView>,
         focus: FocusHandle,
         focused: bool,
+        scrollbar_visible: bool,
     ) -> Self {
         Self {
             terminal,
             terminal_view,
             focus,
             focused,
+            scrollbar_visible,
         }
+    }
+
+    // window level too, so dragging the thumb keeps scrolling after leaving the track
+    fn register_scrollbar_listeners(
+        &self,
+        scrollbar: ScrollbarLayout,
+        hitbox: Hitbox,
+        window: &mut Window,
+    ) {
+        let view = self.terminal_view.clone();
+        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble
+                && event.button == MouseButton::Left
+                && hitbox.is_hovered(window)
+            {
+                let offset = scrollbar.offset_at(event.position.y);
+                view.update(cx, |view, cx| view.scrollbar_down(offset, cx));
+            }
+        });
+        let view = self.terminal_view.clone();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+            if phase == DispatchPhase::Bubble && event.pressed_button == Some(MouseButton::Left) {
+                let offset = scrollbar.offset_at(event.position.y);
+                view.update(cx, |view, cx| view.scrollbar_drag(offset, cx));
+            }
+        });
     }
 
     // window level listeners, so a drag keeps selecting after leaving the terminal area
@@ -125,10 +158,28 @@ impl Element for TerminalElement {
         let font_id = text_system.resolve_font(&font);
         let cell_width = text_system.advance(font_id, font_size, 'm').unwrap().width;
 
+        // the bar keeps its space while hidden, so showing it never reflows the grid
+        let bar_settings = settings.scrollbar.clone();
+        let bar_width = match bar_settings.enable {
+            ScrollbarEnable::Off => px(0.),
+            _ => px(bar_settings.width),
+        };
+        let track_x = match bar_settings.placement {
+            ScrollbarPlacement::Left => bounds.origin.x,
+            ScrollbarPlacement::Right => bounds.origin.x + bounds.size.width - bar_width,
+        };
+        let track = Bounds::new(
+            point(track_x, bounds.origin.y),
+            size(bar_width, bounds.size.height),
+        );
+
         let mut origin = bounds.origin;
         origin.x += cell_width;
+        if bar_settings.placement == ScrollbarPlacement::Left {
+            origin.x += bar_width;
+        }
         let mut grid_size = bounds.size;
-        grid_size.width = (grid_size.width - cell_width).max(cell_width * 2.);
+        grid_size.width = (grid_size.width - cell_width - bar_width).max(cell_width * 2.);
         // alacritty panics on a grid without rows
         grid_size.height = grid_size.height.max(line_height);
 
@@ -195,11 +246,35 @@ impl Element for TerminalElement {
             }
         });
 
+        let show_scrollbar = self.scrollbar_visible
+            && match bar_settings.enable {
+                ScrollbarEnable::On => true,
+                ScrollbarEnable::Off => false,
+                ScrollbarEnable::Dynamic => content.history_size > 0,
+            };
+        let scrollbar = show_scrollbar.then(|| {
+            ScrollbarLayout::new(
+                track,
+                content.history_size,
+                dimensions.num_lines(),
+                content.display_offset,
+                theme.scrollbar,
+            )
+        });
+
+        // inserted after the terminal hitbox so it sits on top and clicks on it skip selection
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        let scrollbar = scrollbar.map(|scrollbar| {
+            let hitbox = window.insert_hitbox(track, HitboxBehavior::BlockMouseExceptScroll);
+            (scrollbar, hitbox)
+        });
+
         LayoutState {
-            hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            hitbox,
             rects,
             batched_text_runs,
             cursor,
+            scrollbar,
             dimensions,
             font_size,
         }
@@ -217,6 +292,10 @@ impl Element for TerminalElement {
     ) {
         window.set_cursor_style(CursorStyle::IBeam, &layout.hitbox);
         self.register_mouse_listeners(layout.hitbox.clone(), window);
+        if let Some((scrollbar, hitbox)) = &layout.scrollbar {
+            window.set_cursor_style(CursorStyle::Arrow, hitbox);
+            self.register_scrollbar_listeners(*scrollbar, hitbox.clone(), window);
+        }
 
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             let background = self.terminal.read(cx).theme(cx).terminal_background;
@@ -240,6 +319,9 @@ impl Element for TerminalElement {
             }
             if let Some(cursor) = &layout.cursor {
                 cursor.paint(origin, window, cx);
+            }
+            if let Some((scrollbar, _)) = &layout.scrollbar {
+                scrollbar.paint(window);
             }
         });
     }

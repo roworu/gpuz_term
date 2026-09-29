@@ -14,8 +14,8 @@ use serde_json_lenient::Value;
 
 pub use keybindings::Keybindings;
 pub use options::{
-    CursorShape, LineHeight, NewTabButton, Shell, TabIconPosition, TabTitleAlign, TabTitleBlock,
-    ThemeMode,
+    CursorShape, LineHeight, NewTabButton, ScrollbarEnable, ScrollbarPlacement, Shell,
+    TabIconPosition, TabTitleAlign, TabTitleBlock, ThemeMode,
 };
 pub use tab_icons::TabIcons;
 
@@ -68,6 +68,17 @@ pub struct TerminalSettings {
     pub font_size: f32,
     pub line_height: LineHeight,
     pub cursor_shape: CursorShape,
+    pub max_history_length: usize,
+    pub scrollbar: ScrollbarSettings,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct ScrollbarSettings {
+    pub enable: ScrollbarEnable,
+    pub placement: ScrollbarPlacement,
+    pub width: f32,
+    /// seconds without scrolling before it hides, 0 never hides
+    pub auto_hide: f32,
 }
 
 impl Default for TerminalSettings {
@@ -100,6 +111,10 @@ impl Global for Settings {}
 const FONT_SIZE_RANGE: (f32, f32) = (6., 72.);
 // lines below 1 overlap, above 3 waste the screen
 const LINE_HEIGHT_RANGE: (f32, f32) = (1., 3.);
+// thinner bars are hard to grab, wider ones eat the grid
+const SCROLLBAR_WIDTH_RANGE: (f32, f32) = (2., 64.);
+// Duration panics on negative or huge seconds, an hour is already "never"
+const AUTO_HIDE_RANGE: (f32, f32) = (0., 3600.);
 
 fn limit(name: &str, value: f32, (min, max): (f32, f32)) -> Option<f32> {
     if value.is_nan() || value < min {
@@ -181,6 +196,19 @@ impl Settings {
             terminal.line_height = limit("terminal.line_height", value, LINE_HEIGHT_RANGE)
                 .map_or(defaults.terminal.line_height, LineHeight::Custom);
         }
+        let scrollbar = &mut terminal.scrollbar;
+        scrollbar.width = limit(
+            "terminal.scrollbar.width",
+            scrollbar.width,
+            SCROLLBAR_WIDTH_RANGE,
+        )
+        .unwrap_or(defaults.terminal.scrollbar.width);
+        scrollbar.auto_hide = limit(
+            "terminal.scrollbar.auto_hide",
+            scrollbar.auto_hide,
+            AUTO_HIDE_RANGE,
+        )
+        .unwrap_or(defaults.terminal.scrollbar.auto_hide);
         if settings.profiles.is_empty() {
             eprintln!("profiles is empty, using the default profiles");
             settings.profiles = defaults.profiles;
@@ -699,6 +727,86 @@ pub(crate) mod tests {
             .map(|p| p.icon.as_deref())
             .collect();
         assert_eq!(icons, [None, Some("B"), None]);
+    }
+
+    #[test]
+    fn parses_scrollbar() {
+        let settings = Settings::parse(
+            r#"{"terminal": {"max_history_length": 0, "scrollbar": {
+                "enable": "on", "placement": "left", "width": 12, "auto_hide": 1.5,
+            }}}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.terminal.max_history_length, 0);
+        assert_eq!(
+            settings.terminal.scrollbar,
+            ScrollbarSettings {
+                enable: ScrollbarEnable::On,
+                placement: ScrollbarPlacement::Left,
+                width: 12.,
+                auto_hide: 1.5,
+            }
+        );
+        let enable = |value: &str| {
+            let json = format!(r#"{{"terminal": {{"scrollbar": {{"enable": "{value}"}}}}}}"#);
+            Settings::parse(&json).unwrap().terminal.scrollbar
+        };
+        let defaults = Settings::default().terminal.scrollbar;
+        for (value, expected) in [
+            ("off", ScrollbarEnable::Off),
+            ("dynamic", ScrollbarEnable::Dynamic),
+        ] {
+            let scrollbar = enable(value);
+            assert_eq!(scrollbar.enable, expected);
+            // other keys keep their defaults
+            assert_eq!(scrollbar.placement, defaults.placement);
+            assert_eq!(scrollbar.width, defaults.width);
+        }
+
+        for json in [
+            r#"{"terminal": {"scrollbar": "on"}}"#,
+            r#"{"terminal": {"scrollbar": {"enable": true}}}"#,
+            r#"{"terminal": {"scrollbar": {"placement": "top"}}}"#,
+            r#"{"terminal": {"scrollbar": {"auto_hide": "1s"}}}"#,
+            r#"{"terminal": {"max_history_length": -1}}"#,
+        ] {
+            assert!(
+                Settings::parse(json).is_err(),
+                "expected error for {json:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scrollbar_width_limits() {
+        let width = |value: &str| {
+            let json = format!(r#"{{"terminal": {{"scrollbar": {{"width": {value}}}}}}}"#);
+            Settings::parse(&json).unwrap().terminal.scrollbar.width
+        };
+        let default = Settings::default().terminal.scrollbar.width;
+        assert_eq!(width("0"), default);
+        assert_eq!(width("1.9"), default);
+        assert_eq!(width("-5"), default);
+        assert_eq!(width("2"), 2.);
+        assert_eq!(width("64"), 64.);
+        assert_eq!(width("65"), 64.);
+        assert_eq!(width("1e30"), 64.);
+    }
+
+    #[test]
+    fn scrollbar_auto_hide_limits() {
+        let auto_hide = |value: &str| {
+            let json = format!(r#"{{"terminal": {{"scrollbar": {{"auto_hide": {value}}}}}}}"#);
+            Settings::parse(&json).unwrap().terminal.scrollbar.auto_hide
+        };
+        let default = Settings::default().terminal.scrollbar.auto_hide;
+        assert_eq!(auto_hide("-1"), default);
+        assert_eq!(auto_hide("-0.5"), default);
+        assert_eq!(auto_hide("0"), 0.);
+        assert_eq!(auto_hide("0.25"), 0.25);
+        assert_eq!(auto_hide("3600"), 3600.);
+        assert_eq!(auto_hide("3601"), 3600.);
+        assert_eq!(auto_hide("1e30"), 3600.);
     }
 
     #[test]

@@ -98,6 +98,10 @@ impl TerminalBuilder {
                 shape: settings.cursor_shape.into(),
                 blinking: false,
             },
+            scrolling_history: match settings.max_history_length {
+                0 => u32::MAX as usize,
+                lines => lines,
+            },
             ..Config::default()
         };
 

@@ -19,6 +19,7 @@ pub struct Theme {
     pub terminal_foreground: Hsla,
     pub cursor: Hsla,
     pub selection: Hsla,
+    pub scrollbar: Hsla,
     /// 8 normal colors followed by 8 bright colors
     pub ansi: [Hsla; 16],
     pub ansi_dim: [Hsla; 8],

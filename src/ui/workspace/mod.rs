@@ -931,4 +931,24 @@ mod tests {
         assert_eq!(title(cx), "after");
         std::fs::remove_file(&file).ok();
     }
+
+    #[gpui::test]
+    fn output_scrolling_into_history_shows_scrollbar(cx: &mut TestAppContext) {
+        let json = r#"{"terminal": {"scrollbar": {"auto_hide": 3600}}}"#;
+        let (ws, cx) = open_with_settings(cx, 1, "{}", Settings::parse(json).unwrap());
+        let visible = |cx: &mut VisualTestContext| {
+            ws.update(cx, |ws, cx| ws.tabs[0].view.read(cx).scrollbar_visible(cx))
+        };
+        pump(cx);
+        assert!(!visible(cx), "shown before any scrolling");
+        send_to(&ws, cx, 0, "seq 1 300\r");
+        let terminal = terminal(&ws, cx, 0);
+        wait_until(cx, "output never reached history", |cx| {
+            terminal.read_with(cx, |t, _| t.history_size() > 0)
+        });
+        assert!(
+            visible(cx),
+            "output scrolled the view but the bar stayed hidden"
+        );
+    }
 }

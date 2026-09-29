@@ -73,6 +73,21 @@
     "line_height": "standard",
     // cursor shape: "block", "bar", "underline" or "hollow"
     "cursor_shape": "bar",
+    // lines of scrollback history to keep, 0 keeps everything
+    "max_history_length": 10000,
+    "scrollbar": {
+      // when to show it:
+      //   "on"      - always
+      //   "off"     - never
+      //   "dynamic" - only when there is history to scroll
+      "enable": "dynamic",
+      // side of the terminal it sits on: "left" or "right"
+      "placement": "right",
+      // width in pixels, from 2 to 64
+      "width": 8,
+      // hide after this many seconds without scrolling. 0 never hides.
+      "auto_hide": 10,
+    },
   },
 
   // what new tabs start with. ctrl-shift-t and a click on "+" open the default profile,

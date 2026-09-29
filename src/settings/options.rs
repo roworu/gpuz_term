@@ -108,3 +108,21 @@ pub enum TabIconPosition {
     Left,
     Right,
 }
+
+/// when the scrollbar is shown
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollbarEnable {
+    On,
+    Off,
+    /// only while there is history to scroll
+    Dynamic,
+}
+
+/// which side of the terminal the scrollbar sits on
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollbarPlacement {
+    Left,
+    Right,
+}

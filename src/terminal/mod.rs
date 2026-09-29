@@ -20,7 +20,7 @@ use alacritty_terminal::{
     Term,
     event::Notify,
     event_loop::{Msg, Notifier},
-    grid::Scroll,
+    grid::{Dimensions, Scroll},
     sync::FairMutex,
     term::TermMode,
 };
@@ -117,6 +117,20 @@ impl Terminal {
 
     /// scroll the viewport by lines, positive is up into history
     pub fn scroll(&mut self, lines: i32) {
+        self.events
+            .push(InternalEvent::Scroll(Scroll::Delta(lines)));
+    }
+
+    /// lines scrolled out above the screen right now, without waiting for `sync`
+    pub fn history_size(&self) -> usize {
+        self.term.lock_unfair().grid().history_size()
+    }
+
+    /// show history `offset` lines above the bottom
+    pub fn scroll_to(&mut self, offset: usize) {
+        // alacritty only scrolls relative, so start from a known position
+        self.events.push(InternalEvent::Scroll(Scroll::Bottom));
+        let lines = offset.min(i32::MAX as usize) as i32;
         self.events
             .push(InternalEvent::Scroll(Scroll::Delta(lines)));
     }
@@ -385,6 +399,65 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// terminal that prints 200 numbered lines, then waits
+    fn spawn_long_output(settings: &TerminalSettings) -> TerminalBuilder {
+        let profile = profile(Shell::WithArguments {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "read _; i=0; while [ $i -lt 200 ]; do echo line_$i; i=$((i+1)); done; echo long_done; sleep 5"
+                    .into(),
+            ],
+        });
+        let mut builder = spawn_with(settings, &profile);
+        // print only after the resize, growing the screen later pulls lines out of history
+        builder.terminal.input(b"\r".to_vec());
+        wait_for_text(&mut builder.terminal, "long_done");
+        builder
+    }
+
+    #[test]
+    fn max_history_length_limits_scrollback() {
+        let settings = TerminalSettings {
+            max_history_length: 50,
+            ..TerminalSettings::default()
+        };
+        let builder = spawn_long_output(&settings);
+        assert_eq!(builder.terminal.last_content.history_size, 50);
+
+        // 0 keeps everything
+        let settings = TerminalSettings {
+            max_history_length: 0,
+            ..TerminalSettings::default()
+        };
+        let builder = spawn_long_output(&settings);
+        assert!(builder.terminal.last_content.history_size >= 170);
+    }
+
+    #[test]
+    fn scroll_to_moves_to_absolute_offset() {
+        let mut builder = spawn_long_output(&TerminalSettings::default());
+        let terminal = &mut builder.terminal;
+        let history = terminal.last_content.history_size;
+
+        terminal.scroll_to(10);
+        terminal.sync();
+        assert_eq!(terminal.last_content.display_offset, 10);
+        // absolute, so repeating it does not scroll further
+        terminal.scroll_to(10);
+        terminal.sync();
+        assert_eq!(terminal.last_content.display_offset, 10);
+
+        terminal.scroll_to(usize::MAX);
+        terminal.sync();
+        assert_eq!(terminal.last_content.display_offset, history);
+        assert!(screen_text(terminal).contains("line_0"));
+
+        terminal.scroll_to(0);
+        terminal.sync();
+        assert_eq!(terminal.last_content.display_offset, 0);
     }
 
     #[test]
