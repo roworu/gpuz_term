@@ -1,6 +1,8 @@
 //! drawing the workspace: tab bar on top, active terminal below
 // TODO: need a setting on where to put tabs (top, bottom, left?, right?)
 
+use std::sync::LazyLock;
+
 use gpui::{
     AnyElement, Context, Div, MouseButton, ScrollHandle, Stateful, Window, anchored, deferred, div,
     prelude::*, px, rems,
@@ -8,9 +10,28 @@ use gpui::{
 
 use super::Workspace;
 use crate::{
-    settings::{NewTabButton, Settings, TabTitleAlign},
+    settings::{NewTabButton, Settings, TabIconPosition, TabTitleAlign},
     theme::Theme,
 };
+
+// tab bar text size in rems, the icon offset is scaled by it
+const TEXT_SIZE: f32 = 0.875;
+
+/// how far `icon` must move down, in ems, for its lowest point to stand on the baseline
+fn icon_drop(icon: &str) -> f32 {
+    // nerd font icons are centered on the line, not set on the baseline like letters.
+    // gpui can't measure glyph outlines on linux, so they are read from the bundled font
+    static FACE: LazyLock<Option<ttf_parser::Face<'static>>> =
+        LazyLock::new(|| ttf_parser::Face::parse(crate::FONT_REGULAR, 0).ok());
+    let Some(face) = FACE.as_ref() else {
+        return 0.;
+    };
+    icon.chars()
+        .filter_map(|ch| face.glyph_bounding_box(face.glyph_index(ch)?))
+        .map(|bounds| bounds.y_min)
+        .min()
+        .map_or(0., |y_min| y_min as f32 / face.units_per_em() as f32)
+}
 
 /// row holding the tabs, fills the bar next to the new tab button
 fn tab_row(scroll: &ScrollHandle) -> Stateful<Div> {
@@ -26,9 +47,33 @@ fn tab_row(scroll: &ScrollHandle) -> Stateful<Div> {
         .track_scroll(scroll)
 }
 
-/// tab sized from settings, with its title
-fn tab(ix: usize, title: String, settings: &Settings) -> Stateful<Div> {
+/// tab sized from settings, with its icon and title
+fn tab(ix: usize, title: String, icon: String, settings: &Settings) -> Stateful<Div> {
     let expand = settings.expand_tabs;
+    let icon = div()
+        .debug_selector(move || format!("tab-icon-{ix}"))
+        .flex_none()
+        .relative()
+        .top(rems(icon_drop(&icon) * TEXT_SIZE))
+        .child(icon);
+    let title = div()
+        .flex()
+        .flex_1()
+        .min_w_0()
+        .map(|row| match settings.tab_title_align {
+            TabTitleAlign::Left => row.justify_start(),
+            TabTitleAlign::Center => row.justify_center(),
+            TabTitleAlign::Right => row.justify_end(),
+        })
+        // shrinks below its text, so long titles are cut at the end whatever the align
+        .child(
+            div()
+                .debug_selector(move || format!("tab-title-{ix}"))
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .child(title),
+        );
     div()
         .id(("tab", ix))
         .flex()
@@ -42,26 +87,10 @@ fn tab(ix: usize, title: String, settings: &Settings) -> Stateful<Div> {
         .when(!expand, |tab| {
             tab.flex_none().w(px(settings.tab_width as f32))
         })
-        .child(
-            div()
-                .flex()
-                .flex_1()
-                .min_w_0()
-                .map(|row| match settings.tab_title_align {
-                    TabTitleAlign::Left => row.justify_start(),
-                    TabTitleAlign::Center => row.justify_center(),
-                    TabTitleAlign::Right => row.justify_end(),
-                })
-                // shrinks below its text, so long titles are cut at the end whatever the align
-                .child(
-                    div()
-                        .debug_selector(move || format!("tab-title-{ix}"))
-                        .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .child(title),
-                ),
-        )
+        .map(|tab| match settings.tab_icon.position {
+            TabIconPosition::Left => tab.child(icon).child(title),
+            TabIconPosition::Right => tab.child(title).child(icon),
+        })
 }
 
 impl Workspace {
@@ -80,7 +109,7 @@ impl Workspace {
         } else {
             tab_state.title.clone()
         };
-        tab(ix, title, Settings::get(cx))
+        tab(ix, title, tab_state.icon.clone(), Settings::get(cx))
             .group("tab")
             .border_r_1()
             .border_color(theme.border)
@@ -206,7 +235,7 @@ impl Render for Workspace {
             .flex_col()
             .bg(theme.terminal_background)
             .font_family(settings.ui_font_family.clone())
-            .text_sm()
+            .text_size(rems(TEXT_SIZE))
             .when(show_bar, |workspace| {
                 workspace.child(
                     div()
@@ -245,6 +274,7 @@ mod tests {
     /// tab row alone, so layout can be checked without spawning shells
     struct TabRow {
         titles: Vec<String>,
+        icon: String,
         settings: Settings,
         scroll: ScrollHandle,
     }
@@ -255,8 +285,8 @@ mod tests {
                 .titles
                 .iter()
                 .enumerate()
-                .map(|(ix, title)| tab(ix, title.clone(), &self.settings));
-            div().size_full().flex().child(
+                .map(|(ix, title)| tab(ix, title.clone(), self.icon.clone(), &self.settings));
+            div().size_full().flex().text_size(rems(TEXT_SIZE)).child(
                 div()
                     .flex()
                     .h(px(30.))
@@ -275,6 +305,7 @@ mod tests {
         let settings = Settings::parse(json).unwrap();
         let (row, cx) = cx.add_window_view(|_, _| TabRow {
             titles: (1..=count).map(|n| format!("tab {n}")).collect(),
+            icon: "I".into(),
             settings,
             scroll: ScrollHandle::new(),
         });
@@ -388,38 +419,115 @@ mod tests {
     }
 
     fn align_json(align: &str) -> String {
-        format!(r#"{{"expand_tabs": false, "tab_width": 200, "tab_title_align": "{align}"}}"#)
+        format!(
+            r#"{{"expand_tabs": false, "tab_width": 200, "tab_title_align": "{align}",
+                "tab_icon": {{"position": "left"}}}}"#
+        )
+    }
+
+    fn icon_bounds(cx: &mut VisualTestContext) -> Bounds<Pixels> {
+        cx.debug_bounds("tab-icon-0").unwrap()
     }
 
     #[gpui::test]
     fn title_follows_align(cx: &mut TestAppContext) {
-        // px_3 padding puts the title 12px inside each tab edge
+        // px_3 padding puts the icon and title 12px inside each tab edge, gap_1 is 4px between them
         let (row, cx) = layout(&align_json("left"), 1, cx);
         let tab = tab_bounds(&row, cx)[0];
         let title = title_bounds(cx);
-        assert!(title.size.width < px(176.));
-        assert_close(title.left(), tab.left() + px(12.));
+        let start = icon_bounds(cx).right() + px(4.);
+        assert!(title.size.width < px(160.));
+        assert_close(title.left(), start);
 
         let (_, cx) = layout(&align_json("right"), 1, cx);
         assert_close(title_bounds(cx).right(), tab.right() - px(12.));
 
         let (_, cx) = layout(&align_json("center"), 1, cx);
-        assert_close(title_bounds(cx).center().x, tab.center().x);
+        let end = tab.right() - px(12.);
+        assert_close(title_bounds(cx).center().x, start + (end - start) / 2.);
     }
 
     #[gpui::test]
     fn long_title_is_cut_for_every_align(cx: &mut TestAppContext) {
-        for align in ["left", "center", "right"] {
-            let (row, cx) = layout(&align_json(align), 1, cx);
-            row.update(cx, |row, cx| {
-                row.titles[0] = "a much much much much much longer title than the tab".into();
-                cx.notify();
-            });
-            cx.run_until_parked();
-            let tab = tab_bounds(&row, cx)[0];
-            let title = title_bounds(cx);
-            assert_close(title.left(), tab.left() + px(12.));
-            assert_close(title.right(), tab.right() - px(12.));
+        for position in ["left", "right"] {
+            for align in ["left", "center", "right"] {
+                let json = format!(
+                    r#"{{"expand_tabs": false, "tab_width": 200, "tab_title_align": "{align}",
+                        "tab_icon": {{"position": "{position}"}}}}"#
+                );
+                let (row, cx) = layout(&json, 1, cx);
+                row.update(cx, |row, cx| {
+                    row.titles[0] = "a much much much much much longer title than the tab".into();
+                    cx.notify();
+                });
+                cx.run_until_parked();
+                let tab = tab_bounds(&row, cx)[0];
+                let title = title_bounds(cx);
+                let icon = icon_bounds(cx);
+                // the icon keeps its place and width, the title is cut next to it
+                assert!(icon.size.width > px(0.));
+                if position == "left" {
+                    assert_close(icon.left(), tab.left() + px(12.));
+                    assert_close(title.left(), icon.right() + px(4.));
+                    assert_close(title.right(), tab.right() - px(12.));
+                } else {
+                    assert_close(title.left(), tab.left() + px(12.));
+                    assert_close(title.right(), icon.left() - px(4.));
+                    assert_close(icon.right(), tab.right() - px(12.));
+                }
+            }
         }
+    }
+
+    #[gpui::test]
+    fn icon_follows_position(cx: &mut TestAppContext) {
+        let json = |position: &str| {
+            format!(
+                r#"{{"expand_tabs": false, "tab_width": 200, "tab_icon": {{"position": "{position}"}}}}"#
+            )
+        };
+        let (row, cx) = layout(&json("left"), 1, cx);
+        let tab = tab_bounds(&row, cx)[0];
+        let (icon, title) = (icon_bounds(cx), title_bounds(cx));
+        assert_close(icon.left(), tab.left() + px(12.));
+        assert!(icon.right() <= title.left());
+
+        let (_, cx) = layout(&json("right"), 1, cx);
+        let (icon, title) = (icon_bounds(cx), title_bounds(cx));
+        assert_close(icon.right(), tab.right() - px(12.));
+        assert_close(title.left(), tab.left() + px(12.));
+        assert!(title.right() <= icon.left());
+    }
+
+    #[test]
+    fn icon_drop_puts_glyph_bottom_on_baseline() {
+        // letters already stand on the baseline
+        assert!(icon_drop("x").abs() < 0.01);
+        // nerd icons float above it
+        assert!(icon_drop("\u{e795}") > 0.05);
+        assert!(icon_drop("\u{f06a9}") > 0.);
+        // the lowest glyph decides, so a mixed icon keeps the letter on the baseline
+        assert_eq!(icon_drop("x\u{e795}"), icon_drop("x"));
+        // letters with descenders move up
+        assert!(icon_drop("g") < 0.);
+        // nothing to measure
+        assert_eq!(icon_drop(""), 0.);
+        assert_eq!(icon_drop("\u{10fffd}"), 0.);
+    }
+
+    #[gpui::test]
+    fn icon_is_moved_down_to_the_baseline(cx: &mut TestAppContext) {
+        let (row, cx) = layout(r#"{"expand_tabs": false, "tab_width": 200}"#, 1, cx);
+        let letter_top = icon_bounds(cx).top();
+        assert_close(letter_top, title_bounds(cx).top());
+        row.update(cx, |row, cx| {
+            row.icon = "\u{e795}".into();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        // rems are 16px in the test window
+        let drop = px(icon_drop("\u{e795}") * TEXT_SIZE * 16.);
+        assert!(drop > px(0.));
+        assert_close(icon_bounds(cx).top(), title_bounds(cx).top() + drop);
     }
 }

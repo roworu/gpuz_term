@@ -29,7 +29,9 @@ use gpui::{App, EventEmitter, Keystroke, Task, WindowAppearance};
 pub use bounds::TerminalBounds;
 pub use builder::TerminalBuilder;
 pub use content::{Content, IndexedCell};
-pub use process::foreground_process;
+pub use process::{ForegroundProcess, children, foreground_process, process_info};
+#[cfg(test)]
+pub(crate) use process::tests::{Kill, spawn};
 
 use builder::ZedListener;
 use keys::to_esc_str;
@@ -371,7 +373,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let process = foreground_process(builder.terminal.shell_pid);
-            if let Some(ForegroundProcess { name, cwd }) = &process
+            if let Some(ForegroundProcess { name, cwd, .. }) = &process
                 && name == "sleep"
             {
                 assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));

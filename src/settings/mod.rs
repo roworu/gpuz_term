@@ -2,6 +2,7 @@
 
 mod keybindings;
 mod options;
+mod tab_icons;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,8 +14,10 @@ use serde_json_lenient::Value;
 
 pub use keybindings::Keybindings;
 pub use options::{
-    CursorShape, LineHeight, NewTabButton, Shell, TabTitleAlign, TabTitleBlock, ThemeMode,
+    CursorShape, LineHeight, NewTabButton, Shell, TabIconPosition, TabTitleAlign, TabTitleBlock,
+    ThemeMode,
 };
+pub use tab_icons::TabIcons;
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Settings {
@@ -25,6 +28,7 @@ pub struct Settings {
     pub tab_width: u32,
     pub tab_title: Vec<TabTitleBlock>,
     pub tab_title_align: TabTitleAlign,
+    pub tab_icon: TabIconSettings,
     pub new_tab_button: NewTabButton,
     pub window_title: Vec<TabTitleBlock>,
     pub default_title: String,
@@ -47,6 +51,13 @@ pub struct ThemeSettings {
     pub dark: Option<PathBuf>,
     /// custom light theme file, bundled one when none
     pub light: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct TabIconSettings {
+    pub position: TabIconPosition,
+    pub dynamic: bool,
+    pub default: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -75,6 +86,7 @@ pub struct Profile {
     pub working_directory: Option<PathBuf>,
     /// color scheme of the terminal, global theme when none
     pub theme: Option<ThemeSettings>,
+    pub icon: Option<String>,
     /// extra environment variables for the command
     #[serde(default)]
     pub env: HashMap<String, String>,
@@ -620,6 +632,66 @@ pub(crate) mod tests {
             parse(&[a_default, b_default, c_default]),
             [true, false, false]
         );
+    }
+
+    #[test]
+    fn parses_tab_icon() {
+        let defaults = Settings::default().tab_icon;
+        let parse = |json: &str| Settings::parse(json).unwrap().tab_icon;
+        for (json, position) in [
+            (
+                r#"{"tab_icon": {"position": "left"}}"#,
+                TabIconPosition::Left,
+            ),
+            (
+                r#"{"tab_icon": {"position": "right"}}"#,
+                TabIconPosition::Right,
+            ),
+        ] {
+            let expected = TabIconSettings {
+                position,
+                ..defaults.clone()
+            };
+            assert_eq!(parse(json), expected);
+        }
+        for dynamic in [true, false] {
+            let json = format!(r#"{{"tab_icon": {{"dynamic": {dynamic}, "default": "D"}}}}"#);
+            let icon = parse(&json);
+            assert_eq!(icon.dynamic, dynamic);
+            assert_eq!(icon.default, "D");
+            assert_eq!(icon.position, defaults.position);
+        }
+
+        for json in [
+            r#"{"tab_icon": "left"}"#,
+            r#"{"tab_icon": {"position": "top"}}"#,
+            r#"{"tab_icon": {"dynamic": "yes"}}"#,
+            r#"{"tab_icon": {"default": null}}"#,
+            r#"{"profiles": [{"name": "a", "command": "system", "icon": 5}]}"#,
+        ] {
+            assert!(
+                Settings::parse(json).is_err(),
+                "expected error for {json:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_icon_is_optional() {
+        let settings = Settings::parse(
+            r#"{"profiles": [
+                {"name": "a", "command": "system"},
+                {"name": "b", "command": "system", "icon": "B"},
+                {"name": "c", "command": "system", "icon": null},
+            ]}"#,
+        )
+        .unwrap();
+        let icons: Vec<_> = settings
+            .profiles
+            .iter()
+            .map(|p| p.icon.as_deref())
+            .collect();
+        assert_eq!(icons, [None, Some("B"), None]);
     }
 
     #[test]

@@ -33,6 +33,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json_lenient = "0.2"
+# glyph outlines, gpui only reports advances on linux
+ttf-parser = "0.25"
 
 [dev-dependencies]
 # test platform for rendering views without a display

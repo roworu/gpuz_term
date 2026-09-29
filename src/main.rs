@@ -9,10 +9,14 @@ use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions
 use gpui_platform::application;
 
 use crate::{
-    settings::{Keybindings, Settings},
+    settings::{Keybindings, Settings, TabIcons},
     theme::Theme,
     ui::workspace::Workspace,
 };
+
+/// bundled regular face, also used to measure tab icons
+pub(crate) const FONT_REGULAR: &[u8] =
+    include_bytes!("../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-Regular.ttf");
 
 fn init(cx: &mut App) {
     let fonts: Vec<Cow<'static, [u8]>> = vec![
@@ -25,15 +29,14 @@ fn init(cx: &mut App) {
         Cow::Borrowed(include_bytes!(
             "../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-Italic.ttf"
         )),
-        Cow::Borrowed(include_bytes!(
-            "../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-Regular.ttf"
-        )),
+        Cow::Borrowed(FONT_REGULAR),
     ];
     cx.text_system()
         .add_fonts(fonts)
         .expect("failed to load bundled fonts");
 
     cx.set_global(Settings::load());
+    cx.set_global(TabIcons::load());
     Theme::apply(cx.window_appearance(), cx);
     cx.bind_keys(Keybindings::load().bindings());
 }

@@ -2921,6 +2921,7 @@ dependencies = [
  "image",
  "serde",
  "serde_json_lenient",
+ "ttf-parser",
 ]
 
 [[package]]

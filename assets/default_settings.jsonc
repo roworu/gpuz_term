@@ -30,6 +30,15 @@
   "tab_title": ["folder", { "text": " - " }, "command"],
   // where the title sits inside its tab: "left", "center" or "right"
   "tab_title_align": "left",
+  // icon shown in each tab
+  "tab_icon": {
+    // side of the tab it sits on: "left" or "right"
+    "position": "left",
+    // follow running program, like ssh or htop. false always shows "default"
+    "dynamic": true,
+    // icon of the shell and of programs without own icon
+    "default": "",
+  },
   // where the "+" new tab button sits: "left" or "right" end of the tab bar, or "after_tabs" next to the last tab
   "new_tab_button": "after_tabs",
   // window title, built from the active tab with the same blocks as "tab_title"
@@ -85,6 +94,8 @@
       // color scheme, same keys as "theme" above, like { "mode": "dark", "dark": "themes/red.jsonc" }.
       // null uses "theme"
       "theme": null,
+      // tab icon, kept whatever runs in the tab. null uses "tab_icon"
+      "icon": null,
       // extra environment variables, like { "EDITOR": "vim" }
       "env": {},
     },

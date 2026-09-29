@@ -1,6 +1,7 @@
 //! root view: owns tabs and handles new tab / close tab.
 
 mod tab_bar;
+mod tab_icon;
 mod tab_title;
 
 use std::time::Duration;
@@ -17,7 +18,7 @@ use gpui::{
 use tab_title::TitleInputs;
 
 use crate::{
-    settings::{Profile, Settings, TabTitleBlock},
+    settings::{Profile, Settings, TabIconSettings, TabIcons, TabTitleBlock},
     terminal::{Event, TerminalBuilder},
     theme::Theme,
     ui::terminal_view::TerminalView,
@@ -32,11 +33,16 @@ pub struct ActivateTab(pub usize);
 
 // programs, folders and command output change without events, so titles are polled
 const TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+// output also refreshes titles, so short commands like "sudo dnf check-update" show up
+// between polls. busy output asks many times a second, so refreshes are spaced by this
+const TITLE_REFRESH_MIN_GAP: Duration = Duration::from_millis(200);
 
-// tab title blocks, window title blocks, active tab, per tab inputs
+// tab title blocks, window title blocks, icon settings, program icons, active tab, per tab inputs
 type TitleSnapshot = (
     Vec<TabTitleBlock>,
     Vec<TabTitleBlock>,
+    TabIconSettings,
+    TabIcons,
     usize,
     Vec<(EntityId, TitleInputs)>,
 );
@@ -45,6 +51,8 @@ struct Tab {
     view: Entity<TerminalView>,
     /// built from `tab_title` blocks, empty until the first refresh
     title: String,
+    icon: String,
+    profile_icon: Option<String>,
     _subscription: Subscription,
 }
 
@@ -67,7 +75,7 @@ impl Workspace {
         let (refresh_titles, mut refresh_rx) = unbounded();
         let title_task = cx.spawn_in(window, async move |this, cx| {
             loop {
-                let Ok((blocks, window_blocks, active, inputs)) =
+                let Ok((blocks, window_blocks, icon_settings, icons, active, inputs)) =
                     this.update(cx, |this, cx| this.title_inputs(cx))
                 else {
                     break;
@@ -82,7 +90,16 @@ impl Workspace {
                             .unwrap_or_default();
                         let titles = inputs
                             .into_iter()
-                            .map(|(id, inputs)| (id, tab_title::build_title(&blocks, &inputs)))
+                            .map(|(id, inputs)| {
+                                let title = tab_title::build_title(&blocks, &inputs);
+                                let icon = tab_icon::tab_icon(
+                                    &icon_settings,
+                                    &icons,
+                                    inputs.profile_icon.as_deref(),
+                                    inputs.shell_pid,
+                                );
+                                (id, title, icon)
+                            })
                             .collect::<Vec<_>>();
                         (titles, window_title)
                     })
@@ -96,6 +113,7 @@ impl Workspace {
                     .background_executor()
                     .timer(TITLE_REFRESH_INTERVAL)
                     .fuse();
+                cx.background_executor().timer(TITLE_REFRESH_MIN_GAP).await;
                 futures::select_biased! {
                     _ = refresh_rx.next() => {},
                     _ = timer => {},
@@ -159,13 +177,19 @@ impl Workspace {
                         this.close_tab_at(ix, window, cx);
                     }
                 }
-                Event::Wakeup => {}
+                // a new program often starts by printing something
+                Event::Wakeup => this.refresh_titles(),
             }
         });
 
         self.tabs.push(Tab {
             view,
             title: String::new(),
+            icon: profile
+                .icon
+                .clone()
+                .unwrap_or_else(|| Settings::get(cx).tab_icon.default.clone()),
+            profile_icon: profile.icon.clone(),
             _subscription: subscription,
         });
         self.activate_tab(self.tabs.len() - 1, window, cx);
@@ -212,6 +236,7 @@ impl Workspace {
                     number: ix + 1,
                     shell_pid: terminal.shell_pid,
                     title: terminal.title(&settings.default_title),
+                    profile_icon: tab.profile_icon.clone(),
                 };
                 (tab.view.entity_id(), inputs)
             })
@@ -219,6 +244,8 @@ impl Workspace {
         (
             settings.tab_title.clone(),
             settings.window_title.clone(),
+            settings.tab_icon.clone(),
+            TabIcons::get(cx).clone(),
             self.active,
             inputs,
         )
@@ -226,7 +253,7 @@ impl Workspace {
 
     fn set_titles(
         &mut self,
-        titles: Vec<(EntityId, String)>,
+        titles: Vec<(EntityId, String, String)>,
         window_title: String,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -242,12 +269,13 @@ impl Workspace {
             self.window_title = window_title;
         }
         let mut changed = false;
-        for (id, title) in titles {
+        for (id, title, icon) in titles {
             // tabs closed while building are skipped
             if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.view.entity_id() == id)
-                && tab.title != title
+                && (tab.title != title || tab.icon != icon)
             {
                 tab.title = title;
+                tab.icon = icon;
                 changed = true;
             }
         }
@@ -317,6 +345,7 @@ mod tests {
             cx.set_global(settings);
             // bundled theme, so no theme files are created
             cx.set_global(Theme::default());
+            cx.set_global(TabIcons::default());
             cx.bind_keys(keybindings.bindings());
         });
         let (ws, cx) = cx.add_window_view(Workspace::new);
@@ -731,6 +760,51 @@ mod tests {
         assert_eq!(clipboard(cx).as_deref(), Some("before"));
     }
 
+    fn tab_icon_and_title(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> (String, String) {
+        ws.update(cx, |ws, _| {
+            (ws.tabs[0].icon.clone(), ws.tabs[0].title.clone())
+        })
+    }
+
+    fn icon_while_sleeping(cx: &mut TestAppContext, json: &str) -> (String, String) {
+        let (ws, cx) = open_with_settings(cx, 1, "{}", Settings::parse(json).unwrap());
+        let icons = TabIcons::parse(r#"{"groups": [{"icon": "S", "commands": ["sleep"]}]}"#);
+        cx.update(|_, cx| cx.set_global(icons.unwrap()));
+        let before = tab_icon_and_title(&ws, cx).0;
+        send_to(&ws, cx, 0, "sleep 30\r");
+        wait_until(cx, "sleep never showed in the title", |cx| {
+            tab_icon_and_title(&ws, cx).1.ends_with("sleep")
+        });
+        (before, tab_icon_and_title(&ws, cx).0)
+    }
+
+    #[gpui::test]
+    fn tab_icon_follows_running_program(cx: &mut TestAppContext) {
+        let (before, during) =
+            icon_while_sleeping(cx, r#"{"tab_icon": {"dynamic": true, "default": "D"}}"#);
+        assert_eq!(before, "D");
+        assert_eq!(during, "S");
+    }
+
+    #[gpui::test]
+    fn disabled_dynamic_icon_stays_default(cx: &mut TestAppContext) {
+        let (before, during) =
+            icon_while_sleeping(cx, r#"{"tab_icon": {"dynamic": false, "default": "D"}}"#);
+        assert_eq!(before, "D");
+        assert_eq!(during, "D");
+    }
+
+    #[gpui::test]
+    fn profile_icon_never_changes(cx: &mut TestAppContext) {
+        let (before, during) = icon_while_sleeping(
+            cx,
+            r#"{"tab_icon": {"dynamic": true, "default": "D"},
+                "profiles": [{"name": "p", "command": "system", "icon": "P"}]}"#,
+        );
+        assert_eq!(before, "P");
+        assert_eq!(during, "P");
+    }
+
     /// workspace with the tab bar always shown and these profiles
     fn open_profiles<'a>(
         cx: &'a mut TestAppContext,
@@ -817,5 +891,26 @@ mod tests {
         release(cx, plus);
         cx.run_until_parked();
         assert_eq!(views(&ws, cx).len(), 3);
+    }
+
+    #[gpui::test]
+    fn output_refreshes_titles_before_the_poll(cx: &mut TestAppContext) {
+        let file = std::env::temp_dir().join(format!("kuterm_output_{}", std::process::id()));
+        std::fs::write(&file, "before").unwrap();
+        let json = format!(r#"{{"tab_title": [{{"exec": "cat {}"}}]}}"#, file.display());
+        let (ws, cx) = open_with_settings(cx, 1, "{}", Settings::parse(&json).unwrap());
+        let title = |cx: &mut VisualTestContext| tab_icon_and_title(&ws, cx).1;
+        // let requests queued while opening run out first
+        cx.executor().advance_clock(TITLE_REFRESH_MIN_GAP);
+        cx.run_until_parked();
+        assert_eq!(title(cx), "before");
+        std::fs::write(&file, "after").unwrap();
+        terminal(&ws, cx, 0).update(cx, |_, cx| cx.emit(Event::Wakeup));
+        // well before the next poll, only the output could have refreshed it
+        cx.executor().advance_clock(TITLE_REFRESH_MIN_GAP);
+        cx.run_until_parked();
+        assert!(TITLE_REFRESH_MIN_GAP * 2 < TITLE_REFRESH_INTERVAL);
+        assert_eq!(title(cx), "after");
+        std::fs::remove_file(&file).ok();
     }
 }

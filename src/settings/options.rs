@@ -100,3 +100,11 @@ pub enum NewTabButton {
     Right,
     AfterTabs,
 }
+
+/// which side of the tab the icon sits on
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TabIconPosition {
+    Left,
+    Right,
+}
