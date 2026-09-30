@@ -30,7 +30,7 @@
     {
       // ai agents
       "icon": "󰚩",
-      "commands": ["claude", "opencode", "pi", "codex", "gemini", "aider", "crush", "goose", "amp", "cursor-agent", "copilot", "qwen", "ollama", "llm", "droid", "kiro-cli"],
+      "commands": ["claude", "opencode", "pi", "codex", "gemini", "aider", "crush", "goose", "amp", "cursor-agent", "copilot", "qwen", "llama-cli", "llama-server", "llama-bench", "ollama", "llm", "droid", "kiro-cli"],
     },
     {
       // system monitors
