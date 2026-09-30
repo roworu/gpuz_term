@@ -3,6 +3,7 @@
 mod commands;
 mod keybindings;
 mod options;
+mod pins;
 mod tab_icons;
 
 use std::collections::HashMap;
@@ -19,6 +20,7 @@ pub use options::{
     CursorShape, LineHeight, NewTabButton, ScrollEasing, ScrollbarEnable, ScrollbarPlacement,
     Shell, TabIconPosition, TabTitleAlign, TabTitleBlock, ThemeMode,
 };
+pub use pins::Pins;
 pub use tab_icons::TabIcons;
 
 use crate::cli::Cli;
@@ -40,6 +42,7 @@ pub struct Settings {
     pub terminal: TerminalSettings,
     pub profiles: Vec<Profile>,
     pub command_palette: CommandPaletteSettings,
+    pub notifications: NotificationSettings,
 }
 
 impl Default for Settings {
@@ -61,6 +64,14 @@ pub struct ThemeSettings {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct CommandPaletteSettings {
     pub enable: bool,
+    pub show_recent: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct NotificationSettings {
+    pub enable: bool,
+    /// seconds a notification stays, 0 keeps it until clicked
+    pub timeout: f32,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -141,6 +152,9 @@ const SCROLLBAR_WIDTH_RANGE: (f32, f32) = (2., 64.);
 const AUTO_HIDE_RANGE: (f32, f32) = (0., 3600.);
 // longer glides feel like lag, not smoothness
 const SMOOTH_SCROLL_DURATION_RANGE: (f32, f32) = (0., 1000.);
+
+// Duration panics on negative or huge seconds, an hour is already "until clicked"
+const NOTIFICATION_TIMEOUT_RANGE: (f32, f32) = (0., 3600.);
 
 fn limit(name: &str, value: f32, (min, max): (f32, f32)) -> Option<f32> {
     if value.is_nan() || value < min {
@@ -242,6 +256,12 @@ impl Settings {
             SMOOTH_SCROLL_DURATION_RANGE,
         )
         .unwrap_or(defaults.terminal.smooth_scroll.duration);
+        settings.notifications.timeout = limit(
+            "notifications.timeout",
+            settings.notifications.timeout,
+            NOTIFICATION_TIMEOUT_RANGE,
+        )
+        .unwrap_or(defaults.notifications.timeout);
         if settings.profiles.is_empty() {
             eprintln!("profiles is empty, using the default profiles");
             settings.profiles = defaults.profiles;
@@ -840,6 +860,19 @@ pub(crate) mod tests {
         assert_eq!(auto_hide("3600"), 3600.);
         assert_eq!(auto_hide("3601"), 3600.);
         assert_eq!(auto_hide("1e30"), 3600.);
+    }
+
+    #[test]
+    fn notification_timeout_limits() {
+        let timeout = |value: &str| {
+            let json = format!(r#"{{"notifications": {{"timeout": {value}}}}}"#);
+            Settings::parse(&json).unwrap().notifications.timeout
+        };
+        let default = Settings::default().notifications.timeout;
+        assert_eq!(timeout("-1"), default);
+        assert_eq!(timeout("0"), 0.);
+        assert_eq!(timeout("2.5"), 2.5);
+        assert_eq!(timeout("3601"), 3600.);
     }
 
     #[test]

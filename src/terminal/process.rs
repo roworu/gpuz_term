@@ -106,6 +106,11 @@ pub(crate) mod tests {
                 assert!(Instant::now() < deadline, "{script} never started");
                 std::thread::sleep(Duration::from_millis(20));
             };
+            // fork returns before exec, so wait for the command line to show up
+            while process_info(pid).is_none_or(|info| info.name.is_empty()) {
+                assert!(Instant::now() < deadline, "{script} never exec'd");
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
         child
     }

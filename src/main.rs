@@ -11,9 +11,9 @@ use gpui_platform::application;
 
 use crate::{
     cli::{Cli, USAGE},
-    settings::{Commands, Keybindings, Settings, TabIcons},
+    settings::{Commands, Keybindings, Pins, Settings, TabIcons},
     theme::Theme,
-    ui::workspace::Workspace,
+    ui::{text_input, workspace::Workspace},
 };
 
 /// bundled regular face, also used to measure tab icons
@@ -46,8 +46,10 @@ fn init(cx: &mut App) {
     cx.set_global(settings);
     cx.set_global(TabIcons::load());
     cx.set_global(Commands::load());
+    cx.set_global(Pins::load());
     Theme::apply(cx.window_appearance(), cx);
     cx.bind_keys(Keybindings::load().bindings());
+    cx.bind_keys(text_input::bindings());
 }
 
 fn main() {

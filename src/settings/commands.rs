@@ -20,17 +20,60 @@ pub enum CommandAction {
     ReloadKeybindings,
     ReloadAll,
     NewTab,
+    /// open a tab with the profile of this name
+    NewTabWithProfile(String),
+    /// open a tab without switching to it, later actions of the command act on it
+    NewBackgroundTab,
+    /// open a tab with the profile of this name without switching to it
+    NewBackgroundTabWithProfile(String),
     CloseTab,
     NextTab,
+    PrevTab,
+    /// switch to the tab at this 1 based position
+    ActivateTab(usize),
+    /// copy the active tab's selection into the clipboard
+    Copy,
+    /// paste the clipboard into the active tab
+    Paste,
+    /// scroll the active tab up into history by these many lines
+    ScrollUp(i32),
+    /// scroll the active tab down by these many lines
+    ScrollDown(i32),
+    /// scroll the active tab to the top of its history
+    ScrollTop,
+    /// scroll the active tab back to the prompt
+    ScrollBottom,
+    /// close every tab and exit
+    Quit,
     /// text written to the active tab as if typed
     Type(String),
+    /// show a notification with this text
+    Notify(String),
+    /// show a notification with this text once the program running in the tab finishes
+    NotifyWhenDone(String),
 }
 
 /// palette entry, its actions run in order
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Command {
     pub name: String,
+    /// group shown before the name and used to sort the palette, like "tabs" or "config"
+    #[serde(default)]
+    pub category: Option<String>,
+    /// keep this command at the very top of the palette
+    #[serde(default)]
+    pub pinned: bool,
     pub actions: Vec<CommandAction>,
+}
+
+impl Command {
+    /// "category: name" shown in the palette, just the name when uncategorized
+    pub fn label(&self) -> String {
+        match &self.category {
+            Some(category) => format!("{category}: {}", self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -88,7 +131,11 @@ mod tests {
         let commands = Commands::parse(
             r#"{"commands": [{"name": "all", "actions": [
                 "about", "reload_settings", "reload_themes", "reload_keybindings",
-                "reload_all", "new_tab", "close_tab", "next_tab", {"type": "ls\n"},
+                "reload_all", "new_tab", {"new_tab_with_profile": "dev"},
+                "new_background_tab", {"new_background_tab_with_profile": "dev"}, "close_tab",
+                "next_tab", "prev_tab", {"activate_tab": 2}, "copy", "paste",
+                {"scroll_up": 10}, {"scroll_down": 3}, "scroll_top", "scroll_bottom",
+                "quit", {"type": "ls\n"}, {"notify": "hi"}, {"notify_when_done": "done"},
             ]}]}"#,
         )
         .unwrap();
@@ -96,6 +143,8 @@ mod tests {
             commands.commands,
             vec![Command {
                 name: "all".into(),
+                category: None,
+                pinned: false,
                 actions: vec![
                     CommandAction::About,
                     CommandAction::ReloadSettings,
@@ -103,12 +152,54 @@ mod tests {
                     CommandAction::ReloadKeybindings,
                     CommandAction::ReloadAll,
                     CommandAction::NewTab,
+                    CommandAction::NewTabWithProfile("dev".into()),
+                    CommandAction::NewBackgroundTab,
+                    CommandAction::NewBackgroundTabWithProfile("dev".into()),
                     CommandAction::CloseTab,
                     CommandAction::NextTab,
+                    CommandAction::PrevTab,
+                    CommandAction::ActivateTab(2),
+                    CommandAction::Copy,
+                    CommandAction::Paste,
+                    CommandAction::ScrollUp(10),
+                    CommandAction::ScrollDown(3),
+                    CommandAction::ScrollTop,
+                    CommandAction::ScrollBottom,
+                    CommandAction::Quit,
                     CommandAction::Type("ls\n".into()),
+                    CommandAction::Notify("hi".into()),
+                    CommandAction::NotifyWhenDone("done".into()),
                 ],
             }]
         );
+    }
+
+    #[test]
+    fn category_is_optional_and_labels_the_command() {
+        let commands = Commands::parse(
+            r#"{"commands": [
+                {"name": "create new", "category": "tabs", "actions": ["new_tab"]},
+                {"name": "about", "actions": ["about"]},
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(commands.commands[0].category.as_deref(), Some("tabs"));
+        assert_eq!(commands.commands[0].label(), "tabs: create new");
+        assert_eq!(commands.commands[1].category, None);
+        assert_eq!(commands.commands[1].label(), "about");
+    }
+
+    #[test]
+    fn pinned_defaults_to_false_and_parses() {
+        let commands = Commands::parse(
+            r#"{"commands": [
+                {"name": "plain", "actions": ["about"]},
+                {"name": "sticky", "pinned": true, "actions": ["about"]},
+            ]}"#,
+        )
+        .unwrap();
+        assert!(!commands.commands[0].pinned);
+        assert!(commands.commands[1].pinned);
     }
 
     #[test]
@@ -118,6 +209,12 @@ mod tests {
             r#"{"commands": [{"actions": ["about"]}]}"#,
             r#"{"commands": [{"name": "x"}]}"#,
             r#"{"commands": [{"name": "x", "actions": [{"type": 5}]}]}"#,
+            r#"{"commands": [{"name": "x", "actions": [{"new_tab_with_profile": 5}]}]}"#,
+            r#"{"commands": [{"name": "x", "actions": [{"activate_tab": "two"}]}]}"#,
+            r#"{"commands": [{"name": "x", "actions": [{"activate_tab": -1}]}]}"#,
+            r#"{"commands": [{"name": "x", "actions": [{"scroll_up": "ten"}]}]}"#,
+            r#"{"commands": [{"name": "x", "actions": ["notify"]}]}"#,
+            r#"{"commands": [{"name": "x", "actions": [{"notify_when_done": 1}]}]}"#,
             r#"{"commands": "about"}"#,
         ] {
             assert!(Commands::parse(json).is_err(), "{json} should be invalid");

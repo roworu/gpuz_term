@@ -1,5 +1,6 @@
 //! root view: owns tabs and handles new tab / close tab.
 
+mod notifications;
 mod tab_bar;
 mod tab_icon;
 mod tab_title;
@@ -11,19 +12,20 @@ use futures::{
     channel::mpsc::{UnboundedSender, unbounded},
 };
 use gpui::{
-    Action, App, Context, DismissEvent, Entity, EntityId, Focusable, ManagedView, Pixels, Point,
-    ScrollHandle, Subscription, Task, Window, actions, prelude::*,
+    Action, App, ClipboardItem, Context, DismissEvent, Entity, EntityId, Focusable, ManagedView,
+    Pixels, Point, ScrollHandle, Subscription, Task, Window, actions, prelude::*,
 };
 
+use notifications::Notification;
 use tab_title::TitleInputs;
 
 use crate::{
     cli::Cli,
     settings::{
-        Command, CommandAction, Commands, Keybindings, Profile, Settings, TabIconSettings,
+        Command, CommandAction, Commands, Keybindings, Pins, Profile, Settings, TabIconSettings,
         TabIcons, TabTitleBlock,
     },
-    terminal::{Event, TerminalBuilder},
+    terminal::{Event, Terminal, TerminalBuilder},
     theme::Theme,
     ui::{
         command_palette::{About, CommandPalette},
@@ -43,6 +45,11 @@ const TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 // output also refreshes titles, so short commands like "sudo dnf check-update" show up
 // between polls. busy output asks many times a second, so refreshes are spaced by this
 const TITLE_REFRESH_MIN_GAP: Duration = Duration::from_millis(200);
+// how many recently run commands the palette remembers
+const RECENT_COMMANDS_MAX: usize = 10;
+// a fresh shell prints startup output before its prompt, so typed input waits for a short
+// quiet gap. writing sooner lets the tty echo the input before the shell reads it
+const SHELL_READY_SETTLE: Duration = Duration::from_millis(50);
 
 // tab title blocks, window title blocks, icon settings, program icons, active tab, per tab inputs
 type TitleSnapshot = (
@@ -60,6 +67,13 @@ struct Tab {
     title: String,
     icon: String,
     profile_icon: Option<String>,
+    /// true once the shell is done starting, so writing to it now is not echoed by the tty
+    ready: bool,
+    /// fires after a quiet gap and releases input queued for a still starting shell,
+    /// replacing it on newer output drops the old task and restarts the gap
+    ready_task: Task<()>,
+    /// input a command queued before the shell was ready
+    pending_input: Vec<u8>,
     _subscription: Subscription,
 }
 
@@ -77,6 +91,11 @@ pub struct Workspace {
     /// open about page, none while it is closed
     about: Option<Entity<About>>,
     _overlay_subscriptions: Vec<Subscription>,
+    /// labels of commands run from the palette, most recent first
+    recent_commands: Vec<String>,
+    /// shown notifications, oldest first
+    notifications: Vec<Notification>,
+    next_notification_id: usize,
     refresh_titles: UnboundedSender<()>,
     _title_task: Task<()>,
 }
@@ -143,6 +162,9 @@ impl Workspace {
             palette: None,
             about: None,
             _overlay_subscriptions: Vec::new(),
+            recent_commands: Vec::new(),
+            notifications: Vec::new(),
+            next_notification_id: 0,
             refresh_titles,
             _title_task: title_task,
         };
@@ -156,10 +178,17 @@ impl Workspace {
 
     fn add_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let profile = Settings::get(cx).default_profile().clone();
-        self.add_profile_tab(&profile, window, cx);
+        self.add_profile_tab(&profile, true, window, cx);
     }
 
-    fn add_profile_tab(&mut self, profile: &Profile, window: &mut Window, cx: &mut Context<Self>) {
+    /// open a tab with `profile`, switching to it when `activate`
+    fn add_profile_tab(
+        &mut self,
+        profile: &Profile,
+        activate: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let window_id = window.window_handle().window_id().as_u64();
         let builder = match TerminalBuilder::new(&Settings::get(cx).terminal, profile, window_id) {
             Ok(builder) => builder,
@@ -187,7 +216,10 @@ impl Workspace {
                     }
                 }
                 // a new program often starts by printing something
-                Event::Wakeup => this.refresh_titles(),
+                Event::Wakeup => {
+                    this.schedule_ready(&view, window, cx);
+                    this.refresh_titles();
+                }
             }
         });
 
@@ -199,9 +231,68 @@ impl Workspace {
                 .clone()
                 .unwrap_or_else(|| Settings::get(cx).tab_icon.default.clone()),
             profile_icon: profile.icon.clone(),
+            ready: false,
+            ready_task: Task::ready(()),
+            pending_input: Vec::new(),
             _subscription: subscription,
         });
-        self.activate_tab(self.tabs.len() - 1, window, cx);
+        if activate {
+            self.activate_tab(self.tabs.len() - 1, window, cx);
+        } else {
+            self.refresh_titles();
+            cx.notify();
+        }
+    }
+
+    /// the shell of a tab printed something, wait for it to quiet down before calling it ready
+    fn schedule_ready(
+        &mut self,
+        view: &Entity<TerminalView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.view == view) else {
+            return;
+        };
+        if tab.ready {
+            return;
+        }
+        let view = view.clone();
+        tab.ready_task = cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(SHELL_READY_SETTLE).await;
+            this.update(cx, |this, cx| this.mark_ready(&view, cx)).ok();
+        });
+    }
+
+    /// the shell stopped printing, so it is at a prompt and can take typed input
+    fn mark_ready(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.view == view) else {
+            return;
+        };
+        tab.ready = true;
+        if tab.pending_input.is_empty() {
+            return;
+        }
+        let input = std::mem::take(&mut tab.pending_input);
+        let terminal = tab.view.read(cx).terminal().clone();
+        terminal.update(cx, |terminal, _| terminal.input(input));
+    }
+
+    /// terminal of the tab at `ix`
+    fn terminal_at(&self, ix: usize, cx: &App) -> Entity<Terminal> {
+        self.tabs[ix].view.read(cx).terminal().clone()
+    }
+
+    /// write input to the tab at `ix`, holding it back until a fresh shell is ready
+    fn input_to(&mut self, ix: usize, input: Vec<u8>, cx: &mut Context<Self>) {
+        let tab = &mut self.tabs[ix];
+        if tab.ready {
+            let terminal = tab.view.read(cx).terminal().clone();
+            terminal.update(cx, |terminal, _| terminal.input(input));
+        } else {
+            // a shell still starting echoes raw input from the tty, so wait for its first output
+            tab.pending_input.extend_from_slice(&input);
+        }
     }
 
     fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -211,6 +302,23 @@ impl Workspace {
         self.tab_scroll.scroll_to_item(ix);
         self.tabs[ix].view.focus_handle(cx).focus(window, cx);
         cx.notify();
+    }
+
+    /// open a tab with the named profile, notifying when there is none
+    fn add_named_profile_tab(
+        &mut self,
+        name: &str,
+        activate: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let settings = Settings::get(cx);
+        let Some(profile) = settings.profiles.iter().find(|p| p.name == name).cloned() else {
+            self.show_notification(format!("no profile named {name:?}"), None, cx);
+            return false;
+        };
+        self.add_profile_tab(&profile, activate, window, cx);
+        true
     }
 
     fn close_tab_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -252,42 +360,134 @@ impl Workspace {
     fn reload_keybindings(&mut self, cx: &mut Context<Self>) {
         cx.clear_key_bindings();
         cx.bind_keys(Keybindings::load().bindings());
+        // text fields keep their editing keys, they are not part of the user keybindings
+        cx.bind_keys(crate::ui::text_input::bindings());
     }
 
     fn reload_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.set_global(TabIcons::load());
         cx.set_global(Commands::load());
+        cx.set_global(Pins::load());
         self.reload_keybindings(cx);
         self.reload_settings(window, cx);
     }
 
-    /// run command actions in order against the active tab
+    /// run command actions in order against the active tab, or the last background tab
     fn run_command(&mut self, command: &Command, window: &mut Window, cx: &mut Context<Self>) {
+        // background tab later actions act on, the active tab when none
+        let mut target: Option<Entity<TerminalView>> = None;
         for action in &command.actions {
             // closing the last tab quits, nothing is left to act on
             if self.tabs.is_empty() {
                 return;
             }
+            // a closed background tab falls back to the active one
+            let ix = target
+                .as_ref()
+                .and_then(|view| self.tabs.iter().position(|tab| &tab.view == view))
+                .unwrap_or(self.active);
             match action {
                 CommandAction::About => {
                     let about = cx.new(About::new);
                     self.open_overlay(&about, window, cx);
                     self.about = Some(about);
                 }
-                CommandAction::ReloadSettings => self.reload_settings(window, cx),
-                CommandAction::ReloadThemes => self.reload_themes(window, cx),
-                CommandAction::ReloadKeybindings => self.reload_keybindings(cx),
-                CommandAction::ReloadAll => self.reload_all(window, cx),
-                CommandAction::NewTab => self.add_tab(window, cx),
-                CommandAction::CloseTab => self.close_tab_at(self.active, window, cx),
-                CommandAction::NextTab => self.next_tab(&NextTab, window, cx),
-                CommandAction::Type(text) => {
-                    let terminal = self.tabs[self.active].view.read(cx).terminal().clone();
-                    let bytes = text.clone().into_bytes();
-                    terminal.update(cx, |terminal, _| terminal.input(bytes));
+                CommandAction::ReloadSettings => {
+                    self.reload_settings(window, cx);
+                    self.show_notification("settings reloaded", None, cx);
+                }
+                CommandAction::ReloadThemes => {
+                    self.reload_themes(window, cx);
+                    self.show_notification("themes reloaded", None, cx);
+                }
+                CommandAction::ReloadKeybindings => {
+                    self.reload_keybindings(cx);
+                    self.show_notification("keybindings reloaded", None, cx);
+                }
+                CommandAction::ReloadAll => {
+                    self.reload_all(window, cx);
+                    self.show_notification("all configs reloaded", None, cx);
+                }
+                CommandAction::NewTab => {
+                    self.add_tab(window, cx);
+                    target = None;
+                }
+                CommandAction::NewTabWithProfile(name) => {
+                    if self.add_named_profile_tab(name, true, window, cx) {
+                        target = None;
+                    }
+                }
+                CommandAction::NewBackgroundTab => {
+                    let profile = Settings::get(cx).default_profile().clone();
+                    self.add_profile_tab(&profile, false, window, cx);
+                    target = self.tabs.last().map(|tab| tab.view.clone());
+                }
+                CommandAction::NewBackgroundTabWithProfile(name) => {
+                    if self.add_named_profile_tab(name, false, window, cx) {
+                        target = self.tabs.last().map(|tab| tab.view.clone());
+                    }
+                }
+                CommandAction::CloseTab => {
+                    self.close_tab_at(ix, window, cx);
+                    target = None;
+                }
+                CommandAction::NextTab => {
+                    self.next_tab(&NextTab, window, cx);
+                    target = None;
+                }
+                CommandAction::PrevTab => {
+                    let ix = (self.active + self.tabs.len() - 1) % self.tabs.len();
+                    self.activate_tab(ix, window, cx);
+                    target = None;
+                }
+                CommandAction::ActivateTab(number) => {
+                    if let Some(ix) = number.checked_sub(1)
+                        && ix < self.tabs.len()
+                    {
+                        self.activate_tab(ix, window, cx);
+                        target = None;
+                    }
+                }
+                CommandAction::Copy => {
+                    let selection = self.terminal_at(ix, cx).read(cx).selection_text();
+                    let text = match selection {
+                        Some(text) => {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                            "copied to clipboard"
+                        }
+                        None => "nothing selected to copy",
+                    };
+                    self.show_notification(text, None, cx);
+                }
+                CommandAction::Paste => {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        self.terminal_at(ix, cx)
+                            .update(cx, |terminal, _| terminal.paste(&text));
+                    }
+                }
+                CommandAction::ScrollUp(lines) => self
+                    .terminal_at(ix, cx)
+                    .update(cx, |terminal, _| terminal.scroll(*lines)),
+                CommandAction::ScrollDown(lines) => self
+                    .terminal_at(ix, cx)
+                    .update(cx, |terminal, _| terminal.scroll(-*lines)),
+                CommandAction::ScrollTop => self.terminal_at(ix, cx).update(cx, |terminal, _| {
+                    terminal.scroll_to(terminal.history_size())
+                }),
+                CommandAction::ScrollBottom => self
+                    .terminal_at(ix, cx)
+                    .update(cx, |terminal, _| terminal.scroll_to(0)),
+                CommandAction::Quit => cx.quit(),
+                CommandAction::Type(text) => self.input_to(ix, text.clone().into_bytes(), cx),
+                CommandAction::Notify(text) => self.show_notification(text.clone(), None, cx),
+                CommandAction::NotifyWhenDone(text) => {
+                    let view = self.tabs[ix].view.clone();
+                    self.notify_when_done(view, text.clone(), cx);
                 }
             }
         }
+        // scrolling and pasting change the grid without a wakeup, redraw the active tab
+        cx.notify();
     }
 
     // closes whatever floats over the terminal first, only one overlay is open at a time
@@ -331,17 +531,31 @@ impl Workspace {
             return;
         }
         let commands = Commands::get(cx).commands.clone();
-        let palette = cx.new(|cx| CommandPalette::new(commands, cx));
+        // recency is ignored when disabled, so the palette only sees recent names when it is on
+        let recent = if Settings::get(cx).command_palette.show_recent {
+            self.recent_commands.clone()
+        } else {
+            Vec::new()
+        };
+        let palette = cx.new(|cx| CommandPalette::new(commands, recent, cx));
         self.open_overlay(&palette, window, cx);
         self._overlay_subscriptions.push(cx.subscribe_in(
             &palette,
             window,
             |this, _, command: &Command, window, cx| {
                 this.close_overlay(window, cx);
+                this.record_recent(command.label());
                 this.run_command(command, window, cx);
             },
         ));
         self.palette = Some(palette);
+    }
+
+    /// remember a command run from the palette, most recent first, oldest dropped
+    fn record_recent(&mut self, label: String) {
+        self.recent_commands.retain(|recent| *recent != label);
+        self.recent_commands.insert(0, label);
+        self.recent_commands.truncate(RECENT_COMMANDS_MAX);
     }
 
     fn refresh_titles(&self) {
@@ -471,7 +685,9 @@ mod tests {
             cx.set_global(Theme::default());
             cx.set_global(TabIcons::default());
             cx.set_global(Commands::default());
+            cx.set_global(Pins::default());
             cx.bind_keys(keybindings.bindings());
+            cx.bind_keys(crate::ui::text_input::bindings());
         });
         let (ws, cx) = cx.add_window_view(Workspace::new);
         cx.run_until_parked();
@@ -1137,7 +1353,13 @@ mod tests {
     fn palette_names(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
         ws.update(cx, |ws, cx| {
             let palette = ws.palette.as_ref().unwrap().read(cx);
-            palette.matches().iter().map(|c| c.name.clone()).collect()
+            palette.matches().map(|command| command.label()).collect()
+        })
+    }
+
+    fn palette_query(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> String {
+        ws.update(cx, |ws, cx| {
+            ws.palette.as_ref().unwrap().read(cx).query(cx).to_string()
         })
     }
 
@@ -1150,6 +1372,14 @@ mod tests {
     fn set_commands(cx: &mut VisualTestContext, json: &str) {
         let commands = Commands::parse(json).unwrap();
         cx.update(|_, cx| cx.set_global(commands));
+    }
+
+    /// run one command built from a json `actions` array against the workspace
+    fn run_actions(ws: &Entity<Workspace>, cx: &mut VisualTestContext, actions: &str) {
+        let json = format!(r#"{{"commands": [{{"name": "x", "actions": [{actions}]}}]}}"#);
+        let command = Commands::parse(&json).unwrap().commands.remove(0);
+        ws.update_in(cx, |ws, window, cx| ws.run_command(&command, window, cx));
+        cx.run_until_parked();
     }
 
     #[gpui::test]
@@ -1211,6 +1441,30 @@ mod tests {
     }
 
     #[gpui::test]
+    fn palette_edits_the_query_like_a_text_input(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        set_commands(
+            cx,
+            r#"{"commands": [{"name": "alpha beta", "actions": ["new_tab"]}]}"#,
+        );
+        type_keys(cx, "ctrl-shift-p a l p h a space b e t a");
+        assert_eq!(palette_query(&ws, cx), "alpha beta");
+
+        // alt+backspace deletes the word before the caret
+        type_keys(cx, "alt-backspace");
+        assert_eq!(palette_query(&ws, cx), "alpha ");
+
+        // select all and copy puts the query on the clipboard
+        type_keys(cx, "ctrl-a ctrl-c");
+        assert_eq!(clipboard(cx).as_deref(), Some("alpha "));
+
+        // paste replaces the selection
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("beta".into()));
+        type_keys(cx, "ctrl-v");
+        assert_eq!(palette_query(&ws, cx), "beta");
+    }
+
+    #[gpui::test]
     fn click_runs_a_command(cx: &mut TestAppContext) {
         let (ws, cx) = open(cx, 1);
         set_commands(
@@ -1260,6 +1514,30 @@ mod tests {
         wait_until(cx, "typed command never ran", |cx| {
             terminal.read_with(cx, |t, _| line_starting_with(t, "from_palette").is_some())
         });
+    }
+
+    #[gpui::test]
+    fn typed_command_waits_for_a_new_shell(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        let command = Commands::parse(
+            r#"{"commands": [{"name": "x", "actions":
+                ["new_tab", {"type": "printf 'ok_%s\\n' shell\n"}]}]}"#,
+        )
+        .unwrap()
+        .commands
+        .remove(0);
+        ws.update_in(cx, |ws, window, cx| ws.run_command(&command, window, cx));
+
+        // the new shell has not printed anything yet, so the input is held back
+        assert!(
+            !ws.update(cx, |ws, _| ws.tabs[1].pending_input.is_empty()),
+            "typed input was sent before the shell was ready"
+        );
+        let terminal = terminal(&ws, cx, 1);
+        wait_until(cx, "queued command never ran", |cx| {
+            terminal.read_with(cx, |t, _| line_starting_with(t, "ok_shell").is_some())
+        });
+        assert!(ws.update(cx, |ws, _| ws.tabs[1].pending_input.is_empty()));
     }
 
     #[gpui::test]
@@ -1353,5 +1631,312 @@ mod tests {
             assert_eq!(palette_names(&ws, cx), ["only"]);
         });
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn recent_test_commands(cx: &mut VisualTestContext) {
+        set_commands(
+            cx,
+            r#"{"commands": [
+                {"name": "first", "actions": ["new_tab"]},
+                {"name": "second", "actions": ["new_tab"]},
+                {"name": "third", "actions": ["new_tab"]},
+            ]}"#,
+        );
+    }
+
+    #[gpui::test]
+    fn recently_run_commands_are_listed_first(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        recent_test_commands(cx);
+        type_keys(cx, "ctrl-shift-p t h i r d enter");
+        type_keys(cx, "ctrl-shift-p");
+        assert_eq!(palette_names(&ws, cx), ["third", "first", "second"]);
+        type_keys(cx, "f i r s t enter");
+        type_keys(cx, "ctrl-shift-p");
+        assert_eq!(palette_names(&ws, cx), ["first", "third", "second"]);
+    }
+
+    #[gpui::test]
+    fn disabled_recent_sorts_by_category_and_name(cx: &mut TestAppContext) {
+        let settings = Settings::parse(r#"{"command_palette": {"show_recent": false}}"#).unwrap();
+        let (ws, cx) = open_with_settings(cx, 1, "{}", settings);
+        recent_test_commands(cx);
+        type_keys(cx, "ctrl-shift-p t h i r d enter");
+        type_keys(cx, "ctrl-shift-p");
+        assert_eq!(palette_names(&ws, cx), ["first", "second", "third"]);
+    }
+
+    #[gpui::test]
+    fn commands_are_grouped_by_category_then_name(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        set_commands(
+            cx,
+            r#"{"commands": [
+                {"name": "paste", "category": "edit", "actions": ["new_tab"]},
+                {"name": "zeta", "actions": ["new_tab"]},
+                {"name": "create new", "category": "tabs", "actions": ["new_tab"]},
+                {"name": "copy", "category": "edit", "actions": ["new_tab"]},
+            ]}"#,
+        );
+        type_keys(cx, "ctrl-shift-p");
+        // categorized commands first, each group sorted by name, uncategorized last
+        assert_eq!(
+            palette_names(&ws, cx),
+            ["edit: copy", "edit: paste", "tabs: create new", "zeta"]
+        );
+    }
+
+    #[gpui::test]
+    fn pinned_commands_are_listed_first(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        set_commands(
+            cx,
+            r#"{"commands": [
+                {"name": "alpha", "actions": ["new_tab"]},
+                {"name": "beta", "pinned": true, "actions": ["new_tab"]},
+                {"name": "gamma", "actions": ["new_tab"]},
+            ]}"#,
+        );
+        // run gamma so it is recent, the pinned command still wins
+        type_keys(cx, "ctrl-shift-p g a m m a enter");
+        type_keys(cx, "ctrl-shift-p");
+        assert_eq!(palette_names(&ws, cx), ["beta", "gamma", "alpha"]);
+    }
+
+    #[gpui::test]
+    fn clicking_the_pin_unpins_and_saves(cx: &mut TestAppContext) {
+        let dir = crate::settings::tests::temp_dir("workspace_unpin");
+        crate::settings::tests::with_config_home(&dir, || {
+            let (ws, cx) = open(cx, 1);
+            set_commands(
+                cx,
+                r#"{"commands": [
+                    {"name": "alpha", "actions": ["new_tab"]},
+                    {"name": "beta", "pinned": true, "actions": ["new_tab"]},
+                ]}"#,
+            );
+            type_keys(cx, "ctrl-shift-p");
+            assert_eq!(palette_names(&ws, cx), ["beta", "alpha"]);
+
+            let pin = cx.debug_bounds("pin-0").unwrap().center();
+            click(cx, pin, 1);
+            release(cx, pin);
+            cx.run_until_parked();
+
+            // the row was not run, the palette stays open and beta moved below alpha
+            assert_eq!(views(&ws, cx).len(), 1);
+            assert_eq!(palette_names(&ws, cx), ["alpha", "beta"]);
+            assert_eq!(Pins::load().overrides.get("beta"), Some(&false));
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui::test]
+    fn selection_scrolls_into_view(cx: &mut TestAppContext) {
+        let (_ws, cx) = open(cx, 1);
+        let commands = (0..40)
+            .map(|n| format!(r#"{{"name": "cmd {n:02}", "actions": ["new_tab"]}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        set_commands(cx, &format!(r#"{{"commands": [{commands}]}}"#));
+        type_keys(cx, "ctrl-shift-p");
+        for _ in 0..35 {
+            type_keys(cx, "down");
+        }
+        let list = cx.debug_bounds("command-list").unwrap();
+        let item = cx.debug_bounds("command-35").unwrap();
+        assert!(
+            item.top() >= list.top() - gpui::px(1.)
+                && item.bottom() <= list.bottom() + gpui::px(1.),
+            "selected item {item:?} is outside the list {list:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn tab_navigation_commands(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 3);
+        assert_eq!(current(&ws, cx), 2);
+        run_actions(&ws, cx, r#""prev_tab""#);
+        assert_eq!(current(&ws, cx), 1);
+        run_actions(&ws, cx, r#"{"activate_tab": 1}"#);
+        assert_eq!(current(&ws, cx), 0);
+        // out of range numbers are ignored
+        run_actions(&ws, cx, r#"{"activate_tab": 9}"#);
+        assert_eq!(current(&ws, cx), 0);
+        // previous wraps from the first tab to the last
+        run_actions(&ws, cx, r#""prev_tab""#);
+        assert_eq!(current(&ws, cx), 2);
+    }
+
+    #[gpui::test]
+    fn profile_command_opens_the_named_profile(cx: &mut TestAppContext) {
+        let settings = Settings::parse(
+            r#"{"profiles": [
+                {"name": "default", "command": "system"},
+                {"name": "dev", "command": "system", "icon": "D"},
+            ]}"#,
+        )
+        .unwrap();
+        let (ws, cx) = open_with_settings(cx, 1, "{}", settings);
+        run_actions(&ws, cx, r#"{"new_tab_with_profile": "dev"}"#);
+        assert_eq!(views(&ws, cx).len(), 2);
+        assert_eq!(current(&ws, cx), 1);
+        assert_eq!(ws.update(cx, |ws, _| ws.tabs[1].icon.clone()), "D");
+    }
+
+    #[gpui::test]
+    fn unknown_profile_command_opens_nothing(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        run_actions(&ws, cx, r#"{"new_tab_with_profile": "missing"}"#);
+        run_actions(&ws, cx, r#"{"new_background_tab_with_profile": "missing"}"#);
+        assert_eq!(views(&ws, cx).len(), 1);
+        assert_eq!(
+            notifications(&ws, cx),
+            [
+                r#"no profile named "missing""#,
+                r#"no profile named "missing""#
+            ]
+        );
+    }
+
+    fn notifications(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<String> {
+        ws.update(cx, |ws, _| {
+            ws.notifications
+                .iter()
+                .map(|notification| notification.text.clone())
+                .collect()
+        })
+    }
+
+    #[gpui::test]
+    fn notify_command_shows_until_timeout(cx: &mut TestAppContext) {
+        let settings = Settings::parse(r#"{"notifications": {"timeout": 2}}"#).unwrap();
+        let (ws, cx) = open_with_settings(cx, 1, "{}", settings);
+        run_actions(&ws, cx, r#"{"notify": "hello"}"#);
+        assert_eq!(notifications(&ws, cx), ["hello"]);
+        assert!(cx.debug_bounds("notification-0").is_some());
+        cx.executor().advance_clock(Duration::from_millis(1500));
+        cx.run_until_parked();
+        assert_eq!(notifications(&ws, cx), ["hello"]);
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert!(notifications(&ws, cx).is_empty());
+    }
+
+    #[gpui::test]
+    fn zero_timeout_keeps_notification_until_clicked(cx: &mut TestAppContext) {
+        let settings = Settings::parse(r#"{"notifications": {"timeout": 0}}"#).unwrap();
+        let (ws, cx) = open_with_settings(cx, 1, "{}", settings);
+        run_actions(&ws, cx, r#"{"notify": "sticky"}"#);
+        cx.executor().advance_clock(Duration::from_secs(3600));
+        cx.run_until_parked();
+        assert_eq!(notifications(&ws, cx), ["sticky"]);
+        let center = cx.debug_bounds("notification-0").unwrap().center();
+        click(cx, center, 1);
+        release(cx, center);
+        cx.run_until_parked();
+        assert!(notifications(&ws, cx).is_empty());
+    }
+
+    #[gpui::test]
+    fn disabled_notifications_show_nothing(cx: &mut TestAppContext) {
+        let settings = Settings::parse(r#"{"notifications": {"enable": false}}"#).unwrap();
+        let (ws, cx) = open_with_settings(cx, 1, "{}", settings);
+        run_actions(&ws, cx, r#"{"notify": "hello"}"#);
+        assert!(notifications(&ws, cx).is_empty());
+        assert!(cx.debug_bounds("notification-0").is_none());
+    }
+
+    #[gpui::test]
+    fn palette_actions_report_in_notifications(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        run_actions(&ws, cx, r#""reload_keybindings", "copy""#);
+        assert_eq!(
+            notifications(&ws, cx),
+            ["keybindings reloaded", "nothing selected to copy"]
+        );
+    }
+
+    #[gpui::test]
+    fn background_tab_runs_command_and_notifies_when_done(cx: &mut TestAppContext) {
+        let settings = Settings::parse(r#"{"notifications": {"timeout": 0}}"#).unwrap();
+        let (ws, cx) = open_with_settings(cx, 1, "{}", settings);
+        let file = std::env::temp_dir().join(format!("kuterm_bg_done_{}", std::process::id()));
+        let _ = std::fs::remove_file(&file);
+        let actions = format!(
+            r#""new_background_tab", {{"type": "sleep 0.5; touch {}\n"}}, {{"notify_when_done": "bg done"}}"#,
+            file.display()
+        );
+        run_actions(&ws, cx, &actions);
+
+        // the new tab opened behind the active one, which keeps focus
+        assert_eq!(views(&ws, cx).len(), 2);
+        assert_eq!(current(&ws, cx), 0);
+        wait_until(cx, "background command never finished", |cx| {
+            !notifications(&ws, cx).is_empty()
+        });
+        assert!(file.exists(), "notified before the command finished");
+        assert_eq!(notifications(&ws, cx), ["bg done"]);
+
+        // clicking the notification switches to the tab that finished
+        let center = cx.debug_bounds("notification-0").unwrap().center();
+        click(cx, center, 1);
+        release(cx, center);
+        cx.run_until_parked();
+        assert_eq!(current(&ws, cx), 1);
+        assert!(notifications(&ws, cx).is_empty());
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[gpui::test]
+    fn close_tab_after_background_tab_closes_it(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        let before = views(&ws, cx);
+        run_actions(&ws, cx, r#""new_background_tab", "close_tab""#);
+        assert_eq!(views(&ws, cx), before);
+        assert_eq!(current(&ws, cx), 0);
+    }
+
+    #[gpui::test]
+    fn copy_and_paste_commands(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        print_line(&ws, cx, "pick these words");
+        let start = cell_of(&ws, cx, "pick these words", 5, false);
+        let end = cell_of(&ws, cx, "pick these words", 9, true);
+        click(cx, start, 1);
+        cx.simulate_event(MouseMoveEvent {
+            position: end,
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        });
+        release(cx, end);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(String::new()));
+        run_actions(&ws, cx, r#""copy""#);
+        assert_eq!(clipboard(cx).as_deref(), Some("these"));
+
+        // paste sends the clipboard to the shell, read it back as raw bytes
+        let r = reader(&ws, cx, false, "paste_command");
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("hi".into()));
+        run_actions(&ws, cx, r#""paste""#);
+        assert_eq!(finish(&ws, cx, r), ["68", "69"]);
+    }
+
+    #[gpui::test]
+    fn scroll_commands_move_the_view(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        let terminal = terminal(&ws, cx, 0);
+        send_to(&ws, cx, 0, "seq 1 300; echo DONE\r");
+        wait_until(cx, "output never finished", |cx| {
+            terminal.read_with(cx, |t, _| line_starting_with(t, "DONE").is_some())
+        });
+        let top = terminal.read_with(cx, |t, _| t.history_size());
+        run_actions(&ws, cx, r#""scroll_top""#);
+        assert_eq!(scroll_offset(&terminal, cx), top);
+        run_actions(&ws, cx, r#"{"scroll_down": 10}"#);
+        assert_eq!(scroll_offset(&terminal, cx), top - 10);
+        run_actions(&ws, cx, r#"{"scroll_up": 5}"#);
+        assert_eq!(scroll_offset(&terminal, cx), top - 5);
+        run_actions(&ws, cx, r#""scroll_bottom""#);
+        assert_eq!(scroll_offset(&terminal, cx), 0);
     }
 }

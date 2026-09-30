@@ -170,7 +170,7 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.profile_menu = None;
                         let profile = Settings::get(cx).profiles[ix].clone();
-                        this.add_profile_tab(&profile, window, cx);
+                        this.add_profile_tab(&profile, true, window, cx);
                     }))
             });
         let menu = div()
@@ -298,6 +298,7 @@ impl Render for Workspace {
                     .map(|tab| div().flex_1().min_h_0().child(tab.view.clone())),
             )
             .children(self.render_profile_menu(cx))
+            .children(self.render_notifications(cx))
             .children(self.render_overlay())
     }
 }

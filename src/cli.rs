@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use serde_json_lenient::Value;
 
-use crate::settings::{Commands, Keybindings, Settings, TabIcons, ThemeMode};
+use crate::settings::{Commands, Keybindings, Pins, Settings, TabIcons, ThemeMode};
 use crate::theme::Theme;
 
 pub const USAGE: &str = "usage: kuterm [options]
@@ -102,6 +102,7 @@ impl Cli {
             Keybindings::path(),
             TabIcons::path(),
             Commands::path(),
+            Pins::path(),
         ]
         .into_iter()
         .flatten()
