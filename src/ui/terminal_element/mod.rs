@@ -5,7 +5,7 @@ mod grid;
 mod input_handler;
 mod scrollbar;
 
-use alacritty_terminal::vte::ansi::CursorShape;
+use alacritty_terminal::{term::TermMode, vte::ansi::CursorShape};
 use gpui::{
     App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, Entity, FocusHandle,
     Font, FontFeatures, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement,
@@ -88,26 +88,27 @@ impl TerminalElement {
     }
 
     // window level listeners, so a drag keeps selecting after leaving the terminal area
-    fn register_mouse_listeners(&self, hitbox: Hitbox, window: &mut Window) {
+    fn register_mouse_listeners(&self, hitbox: Hitbox, report_motion: bool, window: &mut Window) {
         let view = self.terminal_view.clone();
+        let down_hitbox = hitbox.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-            if phase == DispatchPhase::Bubble
-                && event.button == MouseButton::Left
-                && hitbox.is_hovered(window)
-            {
+            if phase == DispatchPhase::Bubble && down_hitbox.is_hovered(window) {
                 view.update(cx, |view, cx| view.mouse_down(event, cx));
             }
         });
         let view = self.terminal_view.clone();
-        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-            if phase == DispatchPhase::Bubble && event.pressed_button == Some(MouseButton::Left) {
-                view.update(cx, |view, cx| view.mouse_drag(event, cx));
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+            // moves without a button only matter to programs tracking all motion
+            if phase == DispatchPhase::Bubble
+                && (event.pressed_button.is_some() || (report_motion && hitbox.is_hovered(window)))
+            {
+                view.update(cx, |view, cx| view.mouse_move(event, cx));
             }
         });
         let view = self.terminal_view.clone();
         window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-            if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
-                view.update(cx, |view, _| view.mouse_up());
+            if phase == DispatchPhase::Bubble {
+                view.update(cx, |view, cx| view.mouse_up(event, cx));
             }
         });
     }
@@ -291,7 +292,13 @@ impl Element for TerminalElement {
         cx: &mut App,
     ) {
         window.set_cursor_style(CursorStyle::IBeam, &layout.hitbox);
-        self.register_mouse_listeners(layout.hitbox.clone(), window);
+        let report_motion = self
+            .terminal
+            .read(cx)
+            .last_content
+            .mode
+            .contains(TermMode::MOUSE_MOTION);
+        self.register_mouse_listeners(layout.hitbox.clone(), report_motion, window);
         if let Some((scrollbar, hitbox)) = &layout.scrollbar {
             window.set_cursor_style(CursorStyle::Arrow, hitbox);
             self.register_scrollbar_listeners(*scrollbar, hitbox.clone(), window);

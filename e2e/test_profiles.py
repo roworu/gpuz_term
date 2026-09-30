@@ -26,8 +26,10 @@ def profiled(app_factory, profiles: list, **settings) -> App:
 def test_profile_command_with_arguments(app_factory):
     """the profile command runs with its arguments"""
     app = app_factory({"theme": {"mode": "dark"}, "profiles": [{"name": "script", "command": {
-        "with_arguments": {"program": "/bin/sh", "args": ["-c", 'echo "$0 $1" > "$T2_TMP/out"; sleep 100', "a", "b"]}}}]})
+        "with_arguments": {"program": "/bin/sh", "args": ["-c", 'echo "$0 $1" | tee "$T2_TMP/out"; sleep 100', "a", "b"]}}}]})
     app.wait_file("out", "a b")
+    time.sleep(0.3)
+    app.snap('the profile printed its arguments "a b"')
 
 
 def test_profile_program(app_factory):

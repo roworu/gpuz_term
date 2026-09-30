@@ -24,12 +24,19 @@ podman run --rm -v "$PWD":/src:Z \
   kuterm-dev cargo test <test_name>
 ```
 
-e2e tests drive the real binary on xvfb and check pixels (`e2e/`, pytest). they run as the last step of the release workflow and write `e2e/artifacts/report.html` with screenshots of every tested feature:
+e2e tests drive the real binary and check pixels (`e2e/`, pytest), on xvfb with openbox (x11, default) or on headless sway (wayland). they run for both backends as the last step of the release workflow and write `e2e/artifacts/report-<backend>.html` with screenshots of every tested feature:
 
 ```bash
 # all of them, or pass pytest args like -k palette
 sh e2e/run.sh
+# the same tests on wayland, --backend goes first
+sh e2e/run.sh --backend wayland -k palette
 ```
+
+- tests talk to the display only through `App` in `e2e/harness.py` (keys, mouse, screenshots, titles, clipboard), which picks xdotool/xwininfo or swaymsg/grim/wl-clipboard by backend.
+- wayland input comes from `e2e/fake_input.py`, one virtual keyboard and pointer for the whole session; headless sway has no devices of its own.
+- `@pytest.mark.x11_only` / `@pytest.mark.wayland_only` skip tests on the other backend.
+- the e2e container (`e2e/Containerfile`) also has cjk and emoji fonts, xkb tools for layout tests, wmctrl, sway, grim and wl-clipboard.
 
 CI also runs `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`. container output goes to `target/podman/`. gpui and alacritty are pinned to same git revision in `Cargo.toml`; bump them together.
 

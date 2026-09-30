@@ -28,7 +28,7 @@ use crate::{
     terminal::{Event, Terminal, TerminalBuilder, foreground_process},
     theme::Theme,
     ui::{
-        command_palette::{About, CloseConfirmed, CommandPalette, ConfirmClose},
+        command_palette::{About, CloseConfirmed, CloseTarget, CommandPalette, ConfirmClose},
         terminal_view::TerminalView,
     },
 };
@@ -47,6 +47,8 @@ const TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const TITLE_REFRESH_MIN_GAP: Duration = Duration::from_millis(200);
 // how many recently run commands the palette remembers
 const RECENT_COMMANDS_MAX: usize = 10;
+// how many program names the quit dialog lists before cutting the list short
+const QUIT_DIALOG_MAX_NAMES: usize = 3;
 // a fresh shell prints startup output before its prompt, so typed input waits for a short
 // quiet gap. writing sooner lets the tty echo the input before the shell reads it
 const SHELL_READY_SETTLE: Duration = Duration::from_millis(50);
@@ -100,6 +102,8 @@ pub struct Workspace {
     next_notification_id: usize,
     refresh_titles: UnboundedSender<()>,
     _title_task: Task<()>,
+    /// set once quitting is decided, so closing the window asks nothing more
+    quitting: bool,
 }
 
 impl Workspace {
@@ -170,7 +174,15 @@ impl Workspace {
             next_notification_id: 0,
             refresh_titles,
             _title_task: title_task,
+            quitting: false,
         };
+        // the window manager's close button goes through here, false keeps the window open
+        let workspace = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            workspace
+                .update(cx, |this, cx| this.should_close_window(window, cx))
+                .unwrap_or(true)
+        });
         cx.observe_window_appearance(window, |this: &mut Self, window, cx| {
             this.reload_themes(window, cx);
         })
@@ -299,6 +311,10 @@ impl Workspace {
     }
 
     fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        // focus leaves the close dialog, and a dialog without focus could not be answered
+        if self.confirm_close.take().is_some() {
+            self._overlay_subscriptions.clear();
+        }
         self.active = ix;
         // window title follows the active tab, and tab numbers shift after add or close
         self.refresh_titles();
@@ -334,39 +350,104 @@ impl Workspace {
 
     /// close the tab at `ix`, asking first when a program still runs in it
     fn request_close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        // actions run before the dialog sees keys, so a second close must not replace the dialog
+        if self.confirm_close.is_some() {
+            return;
+        }
         let warn = Settings::get(cx).close_running_tab_warn;
         let Some(program) = warn.then(|| self.running_program(ix, cx)).flatten() else {
             self.close_tab_at(ix, window, cx);
             return;
         };
+        let message = format!(
+            "\"{program}\" is still running in tab {} \"{}\"",
+            ix + 1,
+            self.tab_title(ix, cx)
+        );
         let view = self.tabs[ix].view.clone();
-        let confirm = cx.new(|cx| ConfirmClose::new(program, view.entity_id(), cx));
+        self.open_confirm(message, CloseTarget::Tab(view.entity_id()), window, cx);
+    }
+
+    /// quit, asking first when programs still run in some tabs
+    fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.confirm_close.is_some() {
+            return;
+        }
+        if !self.ask_before_quit(window, cx) {
+            self.quit(cx);
+        }
+    }
+
+    /// the window is about to close, true lets it
+    fn should_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.quitting {
+            return true;
+        }
+        // a second close while asked keeps the dialog up
+        self.confirm_close.is_none() && !self.ask_before_quit(window, cx)
+    }
+
+    /// open the quit dialog when the warning is on and programs run, true when it opened
+    fn ask_before_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !Settings::get(cx).close_running_tab_warn {
+            return false;
+        }
+        let names: Vec<String> = (0..self.tabs.len())
+            .filter_map(|ix| self.running_program(ix, cx))
+            .collect();
+        if names.is_empty() {
+            return false;
+        }
+        self.open_confirm(quit_message(&names), CloseTarget::Window, window, cx);
+        true
+    }
+
+    fn open_confirm(
+        &mut self,
+        message: String,
+        target: CloseTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let confirm = cx.new(|cx| ConfirmClose::new(message, target, cx));
         self.open_overlay(&confirm, window, cx);
         self._overlay_subscriptions.push(cx.subscribe_in(
             &confirm,
             window,
             move |this, _, _: &CloseConfirmed, window, cx| {
                 this.close_overlay(window, cx);
-                // tabs may have moved or closed while the dialog was open
-                if let Some(ix) = this.tabs.iter().position(|tab| tab.view == view) {
-                    this.close_tab_at(ix, window, cx);
+                match target {
+                    // tabs may have moved or closed while the dialog was open
+                    CloseTarget::Tab(id) => {
+                        if let Some(ix) =
+                            this.tabs.iter().position(|tab| tab.view.entity_id() == id)
+                        {
+                            this.close_tab_at(ix, window, cx);
+                        }
+                    }
+                    CloseTarget::Window => this.quit(cx),
                 }
             },
         ));
         self.confirm_close = Some(confirm);
     }
 
+    fn quit(&mut self, cx: &mut Context<Self>) {
+        self.quitting = true;
+        cx.quit();
+    }
+
     fn close_tab_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let closed = self.tabs.remove(ix).view.entity_id();
         if self.tabs.is_empty() {
-            cx.quit();
+            self.quit(cx);
             return;
         }
         // the shell may exit while its tab is asked about, leaving nothing to confirm
         if self
             .confirm_close
             .as_ref()
-            .is_some_and(|confirm| confirm.read(cx).tab == closed)
+            .is_some_and(|confirm| confirm.read(cx).target == CloseTarget::Tab(closed))
         {
             self.close_overlay(window, cx);
         }
@@ -522,7 +603,7 @@ impl Workspace {
                 CommandAction::ScrollBottom => self
                     .terminal_at(ix, cx)
                     .update(cx, |terminal, _| terminal.scroll_to(0)),
-                CommandAction::Quit => cx.quit(),
+                CommandAction::Quit => self.request_quit(window, cx),
                 CommandAction::Type(text) => self.input_to(ix, text.clone().into_bytes(), cx),
                 CommandAction::Notify(text) => self.show_notification(text.clone(), None, cx),
                 CommandAction::NotifyWhenDone(text) => {
@@ -717,6 +798,18 @@ impl Workspace {
     }
 }
 
+/// quit dialog text naming the programs still running, the list is cut after a few names
+fn quit_message(names: &[String]) -> String {
+    let mut list = names[..names.len().min(QUIT_DIALOG_MAX_NAMES)].join(", ");
+    if names.len() > QUIT_DIALOG_MAX_NAMES {
+        list.push_str(", …");
+    }
+    match names.len() {
+        1 => format!("1 tab is still running a program: {list}"),
+        count => format!("{count} tabs are still running programs: {list}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{path::PathBuf, time::Instant};
@@ -906,15 +999,28 @@ mod tests {
         focus_mode: bool,
         name: &str,
     ) -> (usize, PathBuf) {
-        let file = std::env::temp_dir().join(format!("kuterm_focus_{name}_{}", std::process::id()));
-        let ready = file.with_extension("ready");
-        let _ = std::fs::remove_file(&file);
-        let _ = std::fs::remove_file(&ready);
         let mode = if focus_mode {
             "printf '\\033[?1004h'; "
         } else {
             ""
         };
+        reader_with(ws, cx, mode, name, |mode| {
+            mode.contains(TermMode::FOCUS_IN_OUT) == focus_mode
+        })
+    }
+
+    /// like `reader`, running `mode` first and waiting until the view sees `ready` modes
+    fn reader_with(
+        ws: &Entity<Workspace>,
+        cx: &mut VisualTestContext,
+        mode: &str,
+        name: &str,
+        ready_mode: impl Fn(TermMode) -> bool,
+    ) -> (usize, PathBuf) {
+        let file = std::env::temp_dir().join(format!("kuterm_focus_{name}_{}", std::process::id()));
+        let ready = file.with_extension("ready");
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(&ready);
         let (f, r) = (file.display(), ready.display());
         let command = format!(
             "{mode}stty raw -echo; touch {r}; dd bs=1 count={READ} 2>/dev/null | od -An -v -tx1 | tr -d ' \\n' > {f}.tmp; mv {f}.tmp {f}; stty sane\r"
@@ -923,10 +1029,8 @@ mod tests {
         let terminal = terminal(ws, cx, ix);
         terminal.update(cx, |t, _| t.input(command.into_bytes()));
         wait_until(cx, "reader never started", |_| ready.exists());
-        wait_until(cx, "focus mode never reached the view", |cx| {
-            terminal.read_with(cx, |t, _| {
-                t.last_content.mode.contains(TermMode::FOCUS_IN_OUT)
-            }) == focus_mode
+        wait_until(cx, "mode never reached the view", |cx| {
+            terminal.read_with(cx, |t, _| ready_mode(t.last_content.mode))
         });
         // let dd start reading
         for _ in 0..5 {
@@ -1169,6 +1273,127 @@ mod tests {
         cx.write_to_clipboard(gpui::ClipboardItem::new_string("before".into()));
         cx.simulate_keystrokes("ctrl-shift-c");
         assert_eq!(clipboard(cx).as_deref(), Some("before"));
+    }
+
+    /// raw reader in the active tab of a program that asked for sgr mouse reports
+    fn mouse_reader(
+        ws: &Entity<Workspace>,
+        cx: &mut VisualTestContext,
+        name: &str,
+    ) -> (usize, PathBuf) {
+        reader_with(
+            ws,
+            cx,
+            "printf '\\033[?1000h\\033[?1006h'; ",
+            name,
+            |mode| mode.contains(TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE),
+        )
+    }
+
+    /// window position in the middle of a visible cell of the active tab
+    fn cell_center(
+        ws: &Entity<Workspace>,
+        cx: &mut VisualTestContext,
+        column: usize,
+        line: usize,
+    ) -> Point<Pixels> {
+        let ix = current(ws, cx);
+        terminal(ws, cx, ix).read_with(cx, |t, _| {
+            let b = t.last_content.terminal_bounds;
+            point(
+                b.bounds.origin.x + b.cell_width * (column as f32 + 0.5),
+                b.bounds.origin.y + b.line_height * (line as f32 + 0.5),
+            )
+        })
+    }
+
+    fn hex(bytes: &str) -> Vec<String> {
+        bytes.bytes().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[gpui::test]
+    fn clicks_go_to_a_program_that_asked_for_the_mouse(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        let r = mouse_reader(&ws, cx, "mouse_click");
+        let at = cell_center(&ws, cx, 4, 2);
+        click(cx, at, 1);
+        release(cx, at);
+        pump(cx);
+        let selected = terminal(&ws, cx, 0).read_with(cx, |t, _| t.selection_text());
+        assert_eq!(selected, None, "the click also selected");
+        assert_eq!(finish(&ws, cx, r), hex("\x1b[<0;5;3M\x1b[<0;5;3m"));
+    }
+
+    #[gpui::test]
+    fn wheel_goes_to_a_program_that_asked_for_the_mouse(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        let r = mouse_reader(&ws, cx, "mouse_wheel");
+        let position = cell_center(&ws, cx, 0, 0);
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position,
+            delta: gpui::ScrollDelta::Lines(point(0., 1.)),
+            ..Default::default()
+        });
+        pump(cx);
+        let got = finish(&ws, cx, r);
+        let one = hex("\x1b[<64;1;1M");
+        assert!(
+            !got.is_empty() && got.chunks(one.len()).all(|report| report == one),
+            "{got:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn shift_drag_selects_even_when_a_program_asked(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        let r = mouse_reader(&ws, cx, "mouse_shift");
+        let (start, end) = (cell_center(&ws, cx, 0, 0), cell_center(&ws, cx, 5, 0));
+        cx.simulate_event(MouseDownEvent {
+            position: start,
+            modifiers: Modifiers::shift(),
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseMoveEvent {
+            position: end,
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::shift(),
+        });
+        cx.simulate_event(MouseUpEvent {
+            position: end,
+            modifiers: Modifiers::shift(),
+            button: MouseButton::Left,
+            click_count: 1,
+        });
+        pump(cx);
+        let selected = terminal(&ws, cx, 0).read_with(cx, |t, _| t.selection_text());
+        assert!(selected.is_some(), "shift drag selected nothing");
+        assert_eq!(finish(&ws, cx, r), Vec::<String>::new());
+    }
+
+    #[gpui::test]
+    fn clicks_are_not_reported_without_mouse_mode(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        let r = reader(&ws, cx, false, "mouse_off");
+        let at = cell_center(&ws, cx, 4, 2);
+        for button in [MouseButton::Left, MouseButton::Middle, MouseButton::Right] {
+            cx.simulate_event(MouseDownEvent {
+                position: at,
+                modifiers: Modifiers::default(),
+                button,
+                click_count: 1,
+                first_mouse: false,
+            });
+            cx.simulate_event(MouseUpEvent {
+                position: at,
+                modifiers: Modifiers::default(),
+                button,
+                click_count: 1,
+            });
+        }
+        pump(cx);
+        assert_eq!(finish(&ws, cx, r), Vec::<String>::new());
     }
 
     fn tab_icon_and_title(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> (String, String) {
@@ -2109,6 +2334,229 @@ mod tests {
         close_active(&ws, cx);
         assert!(cx.debug_bounds("confirm-close").is_none());
         assert_eq!(views(&ws, cx).len(), 1);
+    }
+
+    fn dialog(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<(CloseTarget, String)> {
+        ws.update(cx, |ws, cx| {
+            ws.confirm_close.as_ref().map(|confirm| {
+                let confirm = confirm.read(cx);
+                (confirm.target, confirm.message().to_string())
+            })
+        })
+    }
+
+    fn quitting(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> bool {
+        ws.update(cx, |ws, _| ws.quitting)
+    }
+
+    #[test]
+    fn quit_message_lists_a_few_programs() {
+        let names = |n: &[&str]| n.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            quit_message(&names(&["vim"])),
+            "1 tab is still running a program: vim"
+        );
+        assert_eq!(
+            quit_message(&names(&["vim", "cargo"])),
+            "2 tabs are still running programs: vim, cargo"
+        );
+        assert_eq!(
+            quit_message(&names(&["a", "b", "c", "d"])),
+            "4 tabs are still running programs: a, b, c, …"
+        );
+    }
+
+    #[gpui::test]
+    fn quit_action_asks_with_running_program(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        start_program(&ws, cx);
+        run_actions(&ws, cx, r#""quit""#);
+        let (target, message) = dialog(&ws, cx).expect("quit asked nothing");
+        assert_eq!(target, CloseTarget::Window);
+        assert_eq!(message, "1 tab is still running a program: sleep");
+        assert!(!quitting(&ws, cx));
+
+        type_keys(cx, "escape");
+        assert!(dialog(&ws, cx).is_none());
+        assert!(!quitting(&ws, cx));
+        assert_eq!(views(&ws, cx).len(), 2);
+
+        run_actions(&ws, cx, r#""quit""#);
+        type_keys(cx, "enter");
+        assert!(quitting(&ws, cx));
+    }
+
+    #[gpui::test]
+    fn idle_quit_and_disabled_warning_quit_at_once(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        run_actions(&ws, cx, r#""quit""#);
+        assert!(dialog(&ws, cx).is_none());
+        assert!(quitting(&ws, cx));
+
+        let settings = Settings::parse(r#"{"close_running_tab_warn": false}"#).unwrap();
+        let (ws, cx) = open_with_settings(cx, 1, "{}", settings);
+        start_program(&ws, cx);
+        run_actions(&ws, cx, r#""quit""#);
+        assert!(dialog(&ws, cx).is_none());
+        assert!(quitting(&ws, cx));
+    }
+
+    #[gpui::test]
+    fn idle_window_closes_at_once(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        assert!(cx.simulate_close(), "idle window kept open");
+        assert!(dialog(&ws, cx).is_none());
+    }
+
+    #[gpui::test]
+    fn window_close_asks_with_running_program(cx: &mut TestAppContext) {
+        let (ws2, cx2) = open(cx, 1);
+        start_program(&ws2, cx2);
+        assert!(!cx2.simulate_close(), "busy window closed without asking");
+        assert_eq!(dialog(&ws2, cx2).map(|d| d.0), Some(CloseTarget::Window));
+        // closing again while asked keeps the dialog
+        assert!(!cx2.simulate_close());
+        type_keys(cx2, "escape");
+        assert!(dialog(&ws2, cx2).is_none());
+        assert!(!quitting(&ws2, cx2));
+
+        assert!(!cx2.simulate_close());
+        type_keys(cx2, "enter");
+        assert!(quitting(&ws2, cx2));
+        assert!(
+            cx2.simulate_close(),
+            "confirmed quit still blocks the close"
+        );
+    }
+
+    #[gpui::test]
+    fn disabled_warning_closes_busy_window(cx: &mut TestAppContext) {
+        let settings = Settings::parse(r#"{"close_running_tab_warn": false}"#).unwrap();
+        let (ws, cx) = open_with_settings(cx, 1, "{}", settings);
+        start_program(&ws, cx);
+        assert!(cx.simulate_close());
+        assert!(dialog(&ws, cx).is_none());
+    }
+
+    #[gpui::test]
+    fn middle_click_asks_about_the_clicked_tab(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 3);
+        cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(600.)));
+        activate(&ws, cx, 1);
+        start_program(&ws, cx);
+        activate(&ws, cx, 2);
+        let old = views(&ws, cx);
+        let title = cx.debug_bounds("tab-title-1").unwrap().center();
+        cx.simulate_event(MouseDownEvent {
+            position: title,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Middle,
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.run_until_parked();
+        let (target, message) = dialog(&ws, cx).expect("busy tab closed without asking");
+        assert_eq!(target, CloseTarget::Tab(old[1]));
+        assert!(
+            message.starts_with("\"sleep\" is still running in tab 2 \""),
+            "{message}"
+        );
+        type_keys(cx, "enter");
+        assert_eq!(views(&ws, cx), vec![old[0], old[2]]);
+        // the active tab stays active, it just moved left
+        assert_eq!(current(&ws, cx), 1);
+    }
+
+    #[gpui::test]
+    fn modified_keys_do_not_answer_the_dialog(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        start_program(&ws, cx);
+        close_active(&ws, cx);
+        for keys in [
+            "ctrl-y",
+            "ctrl-n",
+            "alt-y",
+            "ctrl-enter",
+            "shift-enter",
+            "ctrl-escape",
+        ] {
+            type_keys(cx, keys);
+            assert!(dialog(&ws, cx).is_some(), "{keys} answered the dialog");
+        }
+        // arrows work with modifiers held
+        type_keys(cx, "shift-left enter");
+        assert!(dialog(&ws, cx).is_none());
+        assert_eq!(views(&ws, cx).len(), 2);
+
+        close_active(&ws, cx);
+        type_keys(cx, "shift-n");
+        assert!(dialog(&ws, cx).is_none());
+        assert_eq!(views(&ws, cx).len(), 2);
+        close_active(&ws, cx);
+        type_keys(cx, "shift-y");
+        assert_eq!(views(&ws, cx).len(), 1);
+    }
+
+    #[gpui::test]
+    fn plain_y_and_n_answer_the_dialog(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        start_program(&ws, cx);
+        close_active(&ws, cx);
+        type_keys(cx, "n");
+        assert!(dialog(&ws, cx).is_none());
+        assert_eq!(views(&ws, cx).len(), 2);
+        close_active(&ws, cx);
+        type_keys(cx, "y");
+        assert_eq!(views(&ws, cx).len(), 1);
+    }
+
+    #[gpui::test]
+    fn close_tab_key_does_not_stack_dialogs(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        start_program(&ws, cx);
+        type_keys(cx, "ctrl-shift-w");
+        let first = ws.update(cx, |ws, _| ws.confirm_close.as_ref().map(|c| c.entity_id()));
+        assert!(first.is_some());
+        type_keys(cx, "ctrl-shift-w");
+        let second = ws.update(cx, |ws, _| ws.confirm_close.as_ref().map(|c| c.entity_id()));
+        assert_eq!(first, second, "a second dialog replaced the first");
+        type_keys(cx, "escape");
+        assert!(dialog(&ws, cx).is_none());
+        assert_eq!(views(&ws, cx).len(), 2);
+    }
+
+    #[gpui::test]
+    fn palette_key_replaces_the_dialog(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        start_program(&ws, cx);
+        close_active(&ws, cx);
+        type_keys(cx, "ctrl-shift-p");
+        assert!(dialog(&ws, cx).is_none());
+        assert!(palette_focused(&ws, cx));
+        assert_eq!(views(&ws, cx).len(), 2);
+    }
+
+    #[gpui::test]
+    fn new_tab_key_closes_the_dialog(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        start_program(&ws, cx);
+        close_active(&ws, cx);
+        type_keys(cx, "ctrl-shift-t");
+        assert!(dialog(&ws, cx).is_none());
+        assert!(cx.debug_bounds("confirm-close").is_none());
+        assert_eq!(views(&ws, cx).len(), 3);
+        assert_eq!(current(&ws, cx), 2);
+    }
+
+    #[gpui::test]
+    fn tab_switch_key_closes_the_dialog(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        start_program(&ws, cx);
+        close_active(&ws, cx);
+        type_keys(cx, "alt-1");
+        assert!(dialog(&ws, cx).is_none());
+        assert_eq!(views(&ws, cx).len(), 2);
+        assert_eq!(current(&ws, cx), 0);
     }
 
     #[gpui::test]

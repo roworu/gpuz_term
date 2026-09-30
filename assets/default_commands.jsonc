@@ -39,7 +39,7 @@
 //   { "scroll_down": 10 }              - scroll the active tab down by this many lines
 //   "scroll_top"                       - scroll the active tab to the top of its history
 //   "scroll_bottom"                    - scroll the active tab back to the prompt
-//   "quit"                             - close every tab and exit
+//   "quit"                             - close every tab and exit, asks first while programs run
 //   { "type": "ls\n" }                 - type text into the active tab, "\n" presses enter
 //   { "notify": "hi" }                 - show a notification inside the window
 //   { "notify_when_done": "built" }    - show a notification once the program running in the

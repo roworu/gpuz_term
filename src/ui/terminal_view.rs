@@ -5,13 +5,14 @@ use std::time::{Duration, Instant};
 use alacritty_terminal::selection::SelectionType;
 use gpui::{
     App, ClipboardItem, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, Styled, Subscription, Task, Window, actions, div, px,
+    KeyDownEvent, Modifiers, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
+    Point, Render, ScrollDelta, ScrollWheelEvent, Styled, Subscription, Task, Window, actions, div,
+    px,
 };
 
 use crate::{
     settings::{Settings, SmoothScrollSettings},
-    terminal::{Event, Terminal},
+    terminal::{Event, MouseAction, MouseButton, Terminal},
     ui::terminal_element::TerminalElement,
 };
 
@@ -45,6 +46,8 @@ pub struct TerminalView {
     selecting: bool,
     /// left button went down on the scrollbar and is still held
     dragging_scrollbar: bool,
+    /// cell of the last mouse report, motion is only reported when it changes
+    last_mouse_cell: Option<(usize, usize)>,
     /// drives scrollbar auto hide
     last_scroll: Option<Instant>,
     /// history seen on the last wakeup, growth means output scrolled the view
@@ -87,6 +90,7 @@ impl TerminalView {
             scroll_px: px(0.),
             selecting: false,
             dragging_scrollbar: false,
+            last_mouse_cell: None,
             last_scroll: None,
             history_size: 0,
             scroll_animation: None,
@@ -142,6 +146,28 @@ impl TerminalView {
             }
         };
         if lines != 0 {
+            let terminal = self.terminal.read(cx);
+            if terminal.owns_mouse(&event.modifiers) {
+                let cell = terminal.mouse_cell(event.position);
+                let button = if lines > 0 {
+                    MouseButton::WheelUp
+                } else {
+                    MouseButton::WheelDown
+                };
+                self.terminal.update(cx, |term, _| {
+                    for _ in 0..lines.unsigned_abs() {
+                        term.report_mouse(cell, button, MouseAction::Press, &event.modifiers);
+                    }
+                });
+                return;
+            }
+            if !event.modifiers.shift
+                && self
+                    .terminal
+                    .update(cx, |term, _| term.alternate_scroll(lines))
+            {
+                return;
+            }
             if Settings::get(cx).terminal.smooth_scroll.active() {
                 let terminal = self.terminal.read(cx);
                 // keep adding to the target, so fast wheel spins are not lost mid glide
@@ -214,8 +240,48 @@ impl TerminalView {
         }
     }
 
-    /// single click starts a selection, double selects words, triple lines, shift extends
+    /// tell the program about the mouse when it asked for it, true when it did
+    fn report_mouse(
+        &mut self,
+        position: Point<Pixels>,
+        button: MouseButton,
+        action: MouseAction,
+        modifiers: &Modifiers,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let terminal = self.terminal.read(cx);
+        if !terminal.owns_mouse(modifiers) {
+            return false;
+        }
+        let cell = terminal.mouse_cell(position);
+        // programs only care about the cell, not every pixel of motion inside it
+        if action == MouseAction::Motion && self.last_mouse_cell == Some(cell) {
+            return true;
+        }
+        self.last_mouse_cell = Some(cell);
+        self.terminal.update(cx, |term, _| {
+            term.report_mouse(cell, button, action, modifiers)
+        });
+        true
+    }
+
+    /// a press goes to the program when it asked for the mouse, otherwise a left click starts a
+    /// selection: single click, double selects words, triple lines, shift extends
     pub fn mouse_down(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        if let Some(button) = MouseButton::from_gpui(event.button)
+            && self.report_mouse(
+                event.position,
+                button,
+                MouseAction::Press,
+                &event.modifiers,
+                cx,
+            )
+        {
+            return;
+        }
+        if event.button != gpui::MouseButton::Left {
+            return;
+        }
         let ty = match event.click_count {
             0 | 1 => SelectionType::Simple,
             2 => SelectionType::Semantic,
@@ -232,19 +298,48 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// extend the selection while the button is held, even outside the terminal area
-    pub fn mouse_drag(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+    /// extend the selection while the button is held, even outside the terminal area,
+    /// or report the motion to a program that asked for it
+    pub fn mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         if self.selecting {
             self.terminal
                 .update(cx, |term, _| term.extend_selection(event.position));
             cx.notify();
+            return;
         }
+        if self.dragging_scrollbar {
+            return;
+        }
+        let button = match event.pressed_button {
+            Some(button) => match MouseButton::from_gpui(button) {
+                Some(button) => button,
+                None => return,
+            },
+            None => MouseButton::None,
+        };
+        self.report_mouse(
+            event.position,
+            button,
+            MouseAction::Motion,
+            &event.modifiers,
+            cx,
+        );
     }
 
     /// finish the drag, the selection stays until the next click or input
-    pub fn mouse_up(&mut self) {
+    pub fn mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
+        let was_local = self.selecting || self.dragging_scrollbar;
         self.selecting = false;
         self.dragging_scrollbar = false;
+        if !was_local && let Some(button) = MouseButton::from_gpui(event.button) {
+            self.report_mouse(
+                event.position,
+                button,
+                MouseAction::Release,
+                &event.modifiers,
+                cx,
+            );
+        }
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {

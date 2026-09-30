@@ -5,6 +5,7 @@ mod builder;
 mod content;
 mod events;
 mod keys;
+mod mouse;
 mod process;
 mod selection;
 
@@ -29,6 +30,7 @@ use gpui::{App, EventEmitter, Keystroke, Task, WindowAppearance};
 pub use bounds::TerminalBounds;
 pub use builder::TerminalBuilder;
 pub use content::{Content, IndexedCell};
+pub use mouse::{MouseAction, MouseButton};
 #[cfg(test)]
 pub(crate) use process::tests::{Kill, spawn};
 pub use process::{ForegroundProcess, children, foreground_process, process_info};

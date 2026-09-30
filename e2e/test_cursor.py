@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from harness import App, bundled_theme, near, mask_bbox, x_env, xdo, wait_until
+from harness import BACKEND, App, bundled_theme, near, mask_bbox, session_env, swaymsg, xdo, wait_until
 
 FEATURE = "cursor"
 
@@ -97,8 +97,22 @@ def test_cursor_moves_with_output(app_factory):
 
 @pytest.fixture
 def thief():
-    """another X window that can take the focus from the app"""
-    proc = subprocess.Popen(["xmessage", "-geometry", "300x100+1200+800", "focus thief"], env=x_env(),
+    """something that can take the focus from the app: another x window, or on wayland a
+    second output whose empty workspace gets focused while the app stays visible"""
+    if BACKEND == "wayland":
+        # made once and kept for the session, so every test does not add another output
+        names = {o["name"] for o in swaymsg("-t", "get_outputs")}
+        if "HEADLESS-2" not in names:
+            swaymsg("create_output")
+            wait_until(lambda: "HEADLESS-2" in {o["name"] for o in swaymsg("-t", "get_outputs")},
+                       msg="second output")
+
+        def steal() -> None:
+            swaymsg("focus output HEADLESS-2")
+
+        yield steal
+        return
+    proc = subprocess.Popen(["xmessage", "-geometry", "300x100+0+0", "focus thief"], env=session_env(),
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     # xmessage sets no _NET_WM_PID, so it is found by its class
     wid = wait_until(lambda: xdo("search", "--onlyvisible", "--classname", "xmessage", check=False).split(),

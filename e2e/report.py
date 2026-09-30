@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from harness import BIN, SRC
+from harness import BACKEND, BIN, SRC
 
 
 @dataclass
@@ -77,9 +77,10 @@ class Report:
         version = re.search(r'^version = "(.+)"', (SRC / "Cargo.toml").read_text(), re.M)
         version = f"v{version[1]}" if version else ""
         out = [HEAD]
-        out.append("<h1>kuterm e2e report</h1>")
+        out.append(f"<h1>kuterm e2e report ({BACKEND})</h1>")
         out.append(f"<p>{time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(self.started))}"
-                   f" &middot; binary {html.escape(str(BIN))} &middot; {html.escape(version)}</p>")
+                   f" &middot; binary {html.escape(str(BIN))} &middot; {html.escape(version)}"
+                   f" &middot; backend {BACKEND}</p>")
         out.append("<p>" + " ".join(
             f"<span class='{s}'>{n} {s}</span>" for s, n in totals.items()) + "</p>")
         out.append("<h2>features</h2><table><tr><th>feature</th><th>cases</th><th>result</th></tr>")

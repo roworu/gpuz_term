@@ -47,6 +47,13 @@ impl Terminal {
         grid_point(position, &content.terminal_bounds, content.display_offset)
     }
 
+    /// visible `(column, line)` under a window position, clamped into the grid
+    pub fn mouse_cell(&self, position: Point<Pixels>) -> (usize, usize) {
+        // no display offset, programs count lines from the top of what is shown
+        let (point, _) = grid_point(position, &self.last_content.terminal_bounds, 0);
+        (point.column.0, point.line.0 as usize)
+    }
+
     /// start a new selection at a window position, replacing the old one
     pub fn start_selection(&mut self, position: Point<Pixels>, ty: SelectionType) {
         let (point, side) = self.mouse_point(position);

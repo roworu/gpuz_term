@@ -5,7 +5,7 @@ import time
 import numpy as np
 import pytest
 
-from harness import App, bundled_theme, mask_bbox, near
+from harness import App, bundled_theme, get_clipboard, mask_bbox, near, set_clipboard
 
 FEATURE = "scrollbar and scrolling"
 
@@ -125,3 +125,73 @@ def test_smooth_scroll(app_factory, enable):
         assert len(between) <= 1, tops
     assert final < 600 - 30
     assert np.all(np.diff(tops) <= 0) or not enable
+
+
+# MARK sits on the second to last row, then more output pushes it up
+MARK_SCRIPT = ('r=$(stty size | cut -d" " -f1); seq 1 $((r - 2)); echo MARK; '
+               "step 1; seq 1 5; step 2; seq 1 400")
+
+
+def selected_rows(app: App) -> list:
+    """rows whose first cells are painted in the selection color"""
+    img = app.shot()
+    rows = app.expected_pty(900, 600)[0]
+    # glyphs cover part of the cells, the selection color fills the rest
+    return [row for row in range(rows)
+            if near(img[slice(*app.cell_rect(0, row, 4)[1::2]), slice(*app.cell_rect(0, row, 4)[0::2])],
+                    DARK["selection"], 3).mean() > 0.3]
+
+
+def mark_selected(app_factory, **terminal) -> tuple:
+    """app with MARK selected by a drag, returns it and the row of MARK"""
+    app = app_factory({"theme": {"mode": "dark"}, "terminal": {"scrollbar": {"auto_hide": 0}, **terminal}},
+                      script=MARK_SCRIPT)
+    row = app.expected_pty(900, 600)[0] - 2
+    app.wait(lambda: near(app.shot()[slice(*app.cell_rect(0, row)[1::2])], DARK["terminal_foreground"], 30).any(),
+             msg="MARK printed")
+    time.sleep(0.5)
+    x0, y0, _, y1 = app.cell_rect(0, row)
+    _, _, x1, _ = app.cell_rect(3, row)
+    app.drag((x0 + 1, (y0 + y1) // 2), (x1 - 1, (y0 + y1) // 2))
+    app.wait(lambda: selected_rows(app) == [row], msg=f"MARK selected, rows {selected_rows(app)}")
+    return app, row
+
+
+def test_selection_moves_with_output(app_factory):
+    """output that scrolls the screen moves the selection up with its text"""
+    app, row = mark_selected(app_factory)
+    app.snap("MARK selected")
+    app.step(1)
+    app.wait(lambda: selected_rows(app) == [row - 5], msg=f"selection 5 rows up, rows {selected_rows(app)}")
+    app.snap("5 more lines moved the selection up")
+    app.key("ctrl+shift+c")
+    app.wait(lambda: get_clipboard() == "MARK", msg=f"clipboard, got {get_clipboard()!r}")
+
+
+def test_selection_moves_with_wheel(app_factory):
+    """scrolling into history moves the selection down with its text"""
+    app, row = mark_selected(app_factory)
+    app.step(1)
+    app.wait(lambda: selected_rows(app) == [row - 5], msg="selection moved up")
+    app.wheel(450, 300, up=True, clicks=1)
+    app.wait(lambda: (rows := selected_rows(app)) and rows[0] > row - 5, msg=f"selection moved down, rows {selected_rows(app)}")
+    app.snap("the wheel scrolled up, the selection moved down with MARK")
+    set_clipboard("before")
+    app.key("ctrl+shift+c")
+    app.wait(lambda: get_clipboard() == "MARK", msg=f"clipboard, got {get_clipboard()!r}")
+
+
+def test_selection_dropped_from_history_clears(app_factory):
+    """a selection pushed out of a short history is dropped, copy keeps the clipboard"""
+    app, row = mark_selected(app_factory, max_history_length=10)
+    app.step(1)
+    app.step(2)
+    app.wait(lambda: near(app.shot(), DARK["terminal_foreground"], 30).any(), msg="output")
+    time.sleep(1)
+    assert selected_rows(app) == []
+    set_clipboard("before")
+    app.key("ctrl+shift+c")
+    time.sleep(0.5)
+    assert get_clipboard() == "before"
+    assert app.alive()
+    app.snap("MARK left the history, nothing is selected")

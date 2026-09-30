@@ -140,9 +140,14 @@ jobs:
 
   e2e:
 
-    # last check before publishing: the built linux binary driven on a virtual display
+    # last check before publishing: the built linux binary driven on a virtual x display
+    # and on a headless wayland compositor
     needs: build
     runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [x11, wayland]
 
     steps:
 
@@ -161,14 +166,14 @@ jobs:
     - name: Run e2e tests
       run: |
         tar -xzf dist/kuterm-*-x86_64-linux.tar.gz -C dist
-        KUTERM_BIN="$(echo dist/kuterm-*-x86_64-linux/kuterm)" sh e2e/run.sh
+        KUTERM_BIN="$(echo dist/kuterm-*-x86_64-linux/kuterm)" sh e2e/run.sh --backend ${{ matrix.backend }}
 
     # every tested feature with its settings and screenshots, uploaded on failure too
     - uses: actions/upload-artifact@v7
       if: always()
       with:
-        name: e2e-report
-        path: e2e/artifacts/report.html
+        name: e2e-report-${{ matrix.backend }}
+        path: e2e/artifacts/report-${{ matrix.backend }}.html
 
   publish:
 

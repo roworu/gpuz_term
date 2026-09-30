@@ -74,13 +74,11 @@ fn tab(ix: usize, title: String, icon: String, settings: &Settings) -> Stateful<
             TabTitleAlign::Center => row.justify_center(),
             TabTitleAlign::Right => row.justify_end(),
         })
-        // shrinks below its text, so long titles are cut at the end whatever the align
         .child(
             div()
                 .debug_selector(move || format!("tab-title-{ix}"))
                 .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
+                .truncate()
                 .child(title),
         );
     div()

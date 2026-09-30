@@ -1,13 +1,14 @@
-# e2e tests: the real binary on a virtual x display, checked by pixels.
+# e2e tests: the real binary on a virtual x display or a headless wayland compositor, checked by pixels.
 # same ubuntu as the release runner, so the released binary runs here as is
 FROM docker.io/library/ubuntu:26.04
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        xvfb xauth x11-utils x11-xserver-utils xdotool xclip openbox \
+        xvfb xauth x11-utils x11-xserver-utils x11-xkb-utils xkb-data xdotool xclip openbox wmctrl \
         libxkbcommon-x11-0 libx11-xcb1 libxcb1 libwayland-client0 libfontconfig1 libfreetype6 \
         mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri \
-        fonts-dejavu-core fontconfig \
+        fonts-dejavu-core fonts-wqy-microhei fonts-noto-color-emoji fontconfig \
+        sway grim wl-clipboard \
         dbus dbus-daemon python3 python3-pytest python3-pil python3-numpy python3-dbus python3-gi \
         bash procps psmisc \
     && rm -rf /var/lib/apt/lists/*

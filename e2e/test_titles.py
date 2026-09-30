@@ -4,7 +4,7 @@ import socket
 
 import pytest
 
-from harness import App, as_rgb, ink, mask_bbox, sh, unique_theme, x_env
+from harness import App, as_rgb, ink, mask_bbox, sh, unique_theme, session_env
 
 FEATURE = "window and tab titles"
 
@@ -105,10 +105,11 @@ def test_window_title_follows_active_tab(app_factory):
     app.wait_title("1 one")
 
 
+@pytest.mark.x11_only
 def test_window_class_is_app_id(app_factory):
     """the x11 window class is kuterm, for docks and window rules"""
     app = titled(app_factory, ["number"])
-    out = sh("xprop", "-id", app.wid, "WM_CLASS", env=x_env())
+    out = sh("xprop", "-id", app.wid, "WM_CLASS", env=session_env())
     assert '"kuterm"' in out, out
 
 
