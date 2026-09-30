@@ -95,6 +95,21 @@ def test_arrows_pick_a_command(app_factory):
     app.wait(lambda: ran(app) == ["item-b"], msg=f"item-b ran, got {ran(app)}")
 
 
+def test_arrows_wrap_around(app_factory):
+    """up on the first command goes to the last one, down on the last goes to the first"""
+    app = palette_app(app_factory, [write("item-a"), write("item-b"), write("item-c")],
+                      command_palette={"show_recent": False})
+    app.palette("item", run=False)
+    app.key("Up")
+    app.snap("up from the first item wrapped to the last")
+    app.key("Return")
+    app.wait(lambda: ran(app) == ["item-c"], msg=f"item-c ran, got {ran(app)}")
+    app.palette("item", run=False)
+    app.key("Down", "Down", "Down")
+    app.key("Return")
+    app.wait(lambda: ran(app) == ["item-c", "item-a"], msg=f"item-a ran, got {ran(app)}")
+
+
 def test_no_matches(app_factory):
     """a query matching nothing shows an empty list, enter does nothing"""
     app = palette_app(app_factory, [write("alpha")])
@@ -188,6 +203,30 @@ def test_tab_actions(app_factory):
     app.wait_title("1")
     app.palette("close it")
     app.wait(lambda: not app.alive(), msg="last tab closed quits")
+
+
+def test_pick_tab_action(app_factory):
+    """pick_tab lists the open tabs in tab order, picking one switches to it"""
+    app = palette_app(app_factory, [{"name": "three tabs", "actions": ["new_tab", "new_tab"]},
+                                    {"name": "pick", "actions": ["pick_tab"]}])
+    app.palette("three tabs")
+    app.wait_title("3")
+    app.palette("pick")
+    h = app.bar_height()
+    # the tab bar has the panel color too, so look below it
+    box = app.wait(lambda: panel(app, app.shot()[h:]), msg="tab picker")
+    img = app.shot()[h:]
+    top = divider(img, box)
+    # one row of text per tab below the query
+    rows = np.flatnonzero(near(img[top + 2 : box[3] - 2, box[0] + 4 : box[2] - 4], C["text"], 40).any(axis=1))
+    assert len(rows) and len(np.flatnonzero(np.diff(rows) > 4)) + 1 == 3, rows
+    app.snap("tab picker listing three tabs")
+    app.key("Down", "Return")
+    app.wait_title("2")
+    app.palette("pick")
+    app.wait(lambda: panel(app, app.shot()[h:]), msg="tab picker again")
+    app.key("Up", "Return")
+    app.wait_title("3")
 
 
 def test_type_action_in_new_tab(app_factory):

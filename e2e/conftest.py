@@ -72,6 +72,8 @@ def app_factory(request):
         if id(app) in last and np.array_equal(last[id(app)], img):
             return
         last[id(app)] = img
+        # the window title is not part of the screenshot, titles are tested too
+        caption = f"{caption} (window title: {app.title()!r})"
         path = ARTIFACTS / "shots" / f"{len(REPORT.entries):04d}-{len(entry.shots):02d}.png"
         path.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(img).save(path, optimize=True)

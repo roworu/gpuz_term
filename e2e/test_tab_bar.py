@@ -203,6 +203,24 @@ def test_close_button_closes_tab(app_factory):
     app.wait_title("2")
 
 
+@pytest.mark.parametrize("show", [True, False])
+def test_show_tab_close_button(app_factory, show):
+    """show_tab_close_button false hides the x on the active and hovered tab, middle click still closes"""
+    app = bar_app(app_factory, tab_width=200, show_tab_close_button=show, **PLAIN)
+    open_tabs(app, 2)
+    h = app.bar_height()
+    # hover the first tab too, hovered tabs show their x like the active one
+    app.mouse(100, h // 2)
+    time.sleep(0.3)
+    img = app.shot()
+    active = mask_bbox(ink(img[1 : h - 2, 200 + 150 : 200 + 198], C["tab_active_background"]))
+    hovered = mask_bbox(ink(img[1 : h - 2, 150:198], C["tab_bar_background"]))
+    assert (active is not None) == show and (hovered is not None) == show, (active, hovered)
+    app.snap("x shown" if show else "no x, first tab hovered")
+    app.click(100, h // 2, button=2)
+    app.wait_title("1")
+
+
 def test_middle_click_closes_tab(app_factory):
     """a middle click on a tab closes it"""
     app = bar_app(app_factory, tab_width=200, **PLAIN)

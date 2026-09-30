@@ -4,7 +4,7 @@ import base64
 import os
 import time
 
-from harness import BASH, SCRIPT_PREAMBLE, App, bundled_theme, close_to, dominant, get_clipboard, set_clipboard
+from harness import BASH, SCRIPT_PREAMBLE, App, bundled_theme, close_to, count, dominant, get_clipboard, set_clipboard
 
 FEATURE = "safety"
 
@@ -165,6 +165,10 @@ def test_closing_a_tab_ends_its_programs(app_factory):
     job = int(app.wait_file("job"))
     assert os.path.exists(f"/proc/{shell}") and os.path.exists(f"/proc/{job}")
     app.key("ctrl+shift+w")
+    # sleep runs in the foreground, so the tab asks before closing
+    app.wait(lambda: count(app.shot(), DARK["danger_button"]) > 200, msg="close tab dialog")
+    app.snap("asked before closing the busy tab")
+    app.key("Return")
     app.wait_title("1")
     app.wait(lambda: gone(shell), msg="shell ended")
     app.wait(lambda: gone(job), msg="background job ended")

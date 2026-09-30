@@ -72,7 +72,7 @@ def unique_theme(seed: int) -> dict:
     colors = iter(f"#{seed:02x}{i * 37 % 256:02x}{(i * 91 + 50) % 256:02x}" for i in range(1, 60))
     keys = ["tab_bar_background", "tab_active_background", "border", "text", "text_muted",
             "terminal_background", "terminal_foreground", "cursor", "selection", "scrollbar",
-            "bright_foreground", "dim_foreground"]
+            "bright_foreground", "dim_foreground", "danger_button", "danger_button_text"]
     theme = {key: next(colors) for key in keys}
     theme["ansi"] = [next(colors) for _ in range(16)]
     theme["ansi_dim"] = [next(colors) for _ in range(8)]

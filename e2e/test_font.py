@@ -38,7 +38,7 @@ def check_cells(app: App) -> None:
 
 @pytest.mark.parametrize("size", [8, 12, 18, 24, 40])
 def test_font_size_sets_cell_size(app_factory, size):
-    """terminal.font_size scales the cells and the pty size follows"""
+    """terminal.font_size scales the cells"""
     app = app_factory({"theme": {"mode": "dark"}, "terminal": {"font_size": size}}, script=SAMPLE)
     check_cells(app)
 

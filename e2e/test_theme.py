@@ -1,5 +1,7 @@
 """theme colors as painted on screen: bundled dark and light, custom files, broken files, system mode"""
 
+import time
+
 import pytest
 
 from harness import App, Portal, as_rgb, bundled_theme, close_to, dominant, rgb, unique_theme
@@ -104,10 +106,12 @@ def test_missing_theme_files_are_created(app_factory):
 def test_hex_color_formats(app_factory, value, expected):
     """#rgb, #rgba, #rrggbb and #rrggbbaa colors are accepted"""
     app = app_factory({"theme": {"mode": "dark"}}, files={"themes/dark.jsonc": {"terminal_background": value}})
-    # alpha blends with black, so only the hue is compared for alpha values
+    # alpha blends with black, so alpha values keep the hue but get darker
     got = dominant(app.shot())
     if len(value) in (5, 9):
-        assert got != bundled_theme(True)["terminal_background"]
+        full = rgb(expected)
+        assert all(g < f or f == 0 for g, f in zip(got, full)), (got, full)
+        assert all((g == 0) == (f == 0) for g, f in zip(got, full)), (got, full)
     else:
         assert close_to(got, rgb(expected))
 
@@ -155,4 +159,6 @@ def test_fixed_mode_ignores_desktop(app_factory, portal, mode):
     app.wait(lambda: close_to(dominant(app.shot()), theme["terminal_background"]), msg="fixed theme")
     p.set(PREFER_DARK if mode == "dark" else PREFER_LIGHT)
     p.set(PREFER_LIGHT if mode == "dark" else PREFER_DARK)
+    # the switch arrives over dbus a moment later, give it time to be (wrongly) applied
+    time.sleep(1)
     assert close_to(dominant(app.shot()), theme["terminal_background"])
