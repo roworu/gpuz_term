@@ -40,7 +40,7 @@
     {
       // editors
       "icon": "",
-      "commands": ["vi", "vim", "nvim", "nano", "micro", "hx", "helix", "emacs", "kak"],
+      "commands": ["vi", "vim", "nvim", "nano", "micro", "hx", "helix", "emacs", "kak", "vis"],
     },
     {
       // git
