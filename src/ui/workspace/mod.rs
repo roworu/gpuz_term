@@ -351,6 +351,7 @@ impl Workspace {
     fn reload_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut settings = Settings::load();
         Cli::get().apply(&mut settings);
+        settings.use_installed_fonts(&cx.text_system().all_font_names());
         cx.set_global(settings);
         // theme mode and theme files are picked in settings
         self.reload_themes(window, cx);

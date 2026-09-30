@@ -153,6 +153,8 @@ const AUTO_HIDE_RANGE: (f32, f32) = (0., 3600.);
 // longer glides feel like lag, not smoothness
 const SMOOTH_SCROLL_DURATION_RANGE: (f32, f32) = (0., 1000.);
 
+pub const MAX_HISTORY_LENGTH: usize = u32::MAX as usize;
+
 // Duration panics on negative or huge seconds, an hour is already "until clicked"
 const NOTIFICATION_TIMEOUT_RANGE: (f32, f32) = (0., 3600.);
 
@@ -236,6 +238,13 @@ impl Settings {
             terminal.line_height = limit("terminal.line_height", value, LINE_HEIGHT_RANGE)
                 .map_or(defaults.terminal.line_height, LineHeight::Custom);
         }
+        if terminal.max_history_length > MAX_HISTORY_LENGTH {
+            eprintln!(
+                "terminal.max_history_length {} is above {MAX_HISTORY_LENGTH}, using {MAX_HISTORY_LENGTH}",
+                terminal.max_history_length
+            );
+            terminal.max_history_length = MAX_HISTORY_LENGTH;
+        }
         let scrollbar = &mut terminal.scrollbar;
         scrollbar.width = limit(
             "terminal.scrollbar.width",
@@ -281,6 +290,29 @@ impl Settings {
             None => settings.profiles[0].default = true,
         }
         Ok(settings)
+    }
+
+    /// replace font families that are not installed with the bundled defaults
+    pub fn use_installed_fonts(&mut self, installed: &[String]) {
+        // the system fallback is usually proportional, which breaks the terminal grid
+        let defaults = Self::default();
+        for (name, family, default) in [
+            (
+                "ui_font_family",
+                &mut self.ui_font_family,
+                defaults.ui_font_family,
+            ),
+            (
+                "terminal.font_family",
+                &mut self.terminal.font_family,
+                defaults.terminal.font_family,
+            ),
+        ] {
+            if !installed.contains(family) {
+                eprintln!("{name} {family:?} is not installed, using {default:?}");
+                *family = default;
+            }
+        }
     }
 
     /// profile opened by the new tab action
@@ -913,6 +945,36 @@ pub(crate) mod tests {
         let zero = duration(r#"0, "enable": true"#);
         assert_eq!(zero.duration, 0.);
         assert!(!zero.active());
+    }
+
+    #[test]
+    fn max_history_length_is_capped() {
+        let history = |value: &str| {
+            let json = format!(r#"{{"terminal": {{"max_history_length": {value}}}}}"#);
+            Settings::parse(&json).unwrap().terminal.max_history_length
+        };
+        assert_eq!(history("0"), 0);
+        assert_eq!(history("5000"), 5000);
+        assert_eq!(history("4294967295"), MAX_HISTORY_LENGTH);
+        assert_eq!(history("18446744073709551615"), MAX_HISTORY_LENGTH);
+    }
+
+    #[test]
+    fn missing_font_families_use_defaults() {
+        let defaults = Settings::default();
+        let mut settings = Settings::parse(
+            r#"{"ui_font_family": "No Such Font", "terminal": {"font_family": "DejaVu Sans Mono"}}"#,
+        )
+        .unwrap();
+        settings.use_installed_fonts(&[
+            "DejaVu Sans Mono".to_string(),
+            defaults.ui_font_family.clone(),
+        ]);
+        assert_eq!(settings.ui_font_family, defaults.ui_font_family);
+        assert_eq!(settings.terminal.font_family, "DejaVu Sans Mono");
+
+        settings.use_installed_fonts(&[]);
+        assert_eq!(settings.terminal.font_family, defaults.terminal.font_family);
     }
 
     #[test]

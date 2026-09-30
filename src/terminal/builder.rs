@@ -99,7 +99,7 @@ impl TerminalBuilder {
                 blinking: false,
             },
             scrolling_history: match settings.max_history_length {
-                0 => u32::MAX as usize,
+                0 => crate::settings::MAX_HISTORY_LENGTH,
                 lines => lines,
             },
             ..Config::default()

@@ -21,7 +21,7 @@ else
 fi
 rm -rf "$ROOT/e2e/artifacts"
 set +e
-podman run --rm --memory 4g -v "$ROOT":/src:Z \
+podman run --rm --init --memory 4g -v "$ROOT":/src:Z \
   -e KUTERM_BIN="$bin" -e PYTHONDONTWRITEBYTECODE=1 \
   kuterm-e2e python3 -m pytest -p no:cacheprovider -v -rfEs --tb=short e2e "$@"
 status=$?

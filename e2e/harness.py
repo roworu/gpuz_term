@@ -354,6 +354,46 @@ class App:
     def cleanup(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    # process stats read from /proc, the app alone without its shells
+
+    def cpu_seconds(self) -> float:
+        """user and system cpu time of all app threads"""
+        # the command name in field 2 may hold spaces, so split after its closing paren
+        fields = Path(f"/proc/{self.proc.pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+
+    def cpu_usage(self, seconds: float) -> float:
+        """share of one core used over the next seconds, 1.0 is a fully busy core"""
+        start = self.cpu_seconds()
+        time.sleep(seconds)
+        return (self.cpu_seconds() - start) / seconds
+
+    def rss_mb(self) -> float:
+        for line in Path(f"/proc/{self.proc.pid}/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) / 1024
+        return 0.0
+
+    def fd_count(self) -> int:
+        return len(os.listdir(f"/proc/{self.proc.pid}/fd"))
+
+    def thread_count(self) -> int:
+        return len(os.listdir(f"/proc/{self.proc.pid}/task"))
+
+    def children(self) -> list:
+        """(pid, state) of direct child processes, like shells of open tabs"""
+        found = []
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                fields = Path(f"/proc/{entry}/stat").read_text().rsplit(")", 1)[1].split()
+            except OSError:
+                continue
+            if int(fields[1]) == self.proc.pid:
+                found.append((int(entry), fields[0]))
+        return found
+
     def geometry(self) -> tuple:
         """(x, y, w, h) of the client area on screen"""
         info = sh("xwininfo", "-id", self.wid, env=x_env())

@@ -1,5 +1,7 @@
 """real glyph rendering and metrics: font_family, font_size, line_height, ui_font_family, ui_font_size"""
 
+import time
+
 import pytest
 
 from harness import App, as_rgb, bundled_theme, close_to, ink, ink_bbox, unique_theme
@@ -17,9 +19,9 @@ SAMPLE = (
 )
 
 
-def text_width(app: App, width: int) -> int:
+def text_width(app: App, width: int, top: int = 0) -> int:
     """width of the ink on the first row, the cursor alone is only a few pixels"""
-    box = ink_bbox(app.shot()[: app.line_height(), :width], DARK["terminal_background"])
+    box = ink_bbox(app.shot()[top : top + app.line_height(), :width], DARK["terminal_background"])
     return 0 if box is None else box[2] - box[0]
 
 
@@ -97,11 +99,27 @@ def test_other_installed_font(app_factory):
     assert (shots[0] != shots[1]).any()
 
 
-def test_unknown_font_family_still_renders(app_factory):
-    """a font that is not installed falls back, the terminal still draws text"""
-    app = app_factory({"theme": {"mode": "dark"}, "terminal": {"font_family": "No Such Font 123"}},
-                      script="printf 'still here\\n'")
-    app.wait(lambda: text_width(app, 300) > 50, msg="text drawn")
+@pytest.mark.parametrize("key", ["terminal", "ui"])
+def test_unknown_font_family_uses_bundled_font(app_factory, key):
+    """a font that is not installed falls back to the bundled font, not a proportional system one"""
+    shots = []
+    for family in [None, "No Such Font 123"]:
+        settings = {"theme": {"mode": "dark"}, "hide_bar_for_one_tab": False, "tab_title": [{"text": "Wig@0123"}]}
+        if family and key == "terminal":
+            settings["terminal"] = {"font_family": family}
+        elif family:
+            settings["ui_font_family"] = family
+        app = app_factory(settings, script="printf 'still here, Wig@0123\\n'")
+        top = app.bar_height()
+        app.wait(lambda: text_width(app, 400, top) > 100, msg="text drawn")
+        # titles refresh every second
+        time.sleep(1.5)
+        shots.append(app.shot()[: top + app.line_height(), :400].copy())
+        app.snap(f"font_family {family or 'bundled'}")
+        if family:
+            assert "is not installed" in app.output()
+        app.close()
+    assert (shots[0] == shots[1]).all()
 
 
 @pytest.mark.parametrize("ui_size", [10, 18, 28])

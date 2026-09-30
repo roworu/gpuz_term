@@ -16,7 +16,7 @@ CREATED = {
     "settings.jsonc": "default_settings.jsonc",
     "keybindings.jsonc": "default_keybindings.jsonc",
     "commands.jsonc": "default_commands.jsonc",
-    "tab_icons.jsonc": "tab_icons.jsonc",
+    "tab_icons.jsonc": "default_tab_icons.jsonc",
     "themes/dark.jsonc": "default_theme_dark.jsonc",
     "themes/light.jsonc": "default_theme_light.jsonc",
 }

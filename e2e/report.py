@@ -78,16 +78,16 @@ class Report:
         version = f"v{version[1]}" if version else ""
         out = [HEAD]
         out.append("<h1>kuterm e2e report</h1>")
-        out.append(f"<p class=meta>{time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(self.started))}"
+        out.append(f"<p>{time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(self.started))}"
                    f" &middot; binary {html.escape(str(BIN))} &middot; {html.escape(version)}</p>")
-        out.append("<p class=totals>" + " ".join(
-            f"<span class='badge {s}'>{n} {s}</span>" for s, n in totals.items()) + "</p>")
-        out.append("<h2>features</h2><table class=toc><tr><th>feature</th><th>cases</th><th>result</th></tr>")
+        out.append("<p>" + " ".join(
+            f"<span class='{s}'>{n} {s}</span>" for s, n in totals.items()) + "</p>")
+        out.append("<h2>features</h2><table><tr><th>feature</th><th>cases</th><th>result</th></tr>")
         for i, (feature, items) in enumerate(features.items()):
             failed = sum(e.status == "failed" for e in items)
             status = "failed" if failed else "passed"
             out.append(f"<tr><td><a href='#f{i}'>{html.escape(feature)}</a></td><td>{len(items)}</td>"
-                       f"<td><span class='badge {status}'>{f'{failed} failed' if failed else 'ok'}</span></td></tr>")
+                       f"<td><span class='{status}'>{f'{failed} failed' if failed else 'ok'}</span></td></tr>")
         out.append("</table>")
         for i, (feature, items) in enumerate(features.items()):
             out.append(f"<h2 id='f{i}'>{html.escape(feature)}</h2>")
@@ -96,14 +96,14 @@ class Report:
         return "\n".join(out)
 
     def render_entry(self, entry: Entry) -> str:
-        out = [f"<div class='case {entry.status}'>"]
-        out.append(f"<h3><span class='badge {entry.status}'>{entry.status}</span> {html.escape(entry.test)}"
+        out = ["<div class=case>"]
+        out.append(f"<h3><span class='{entry.status}'>{entry.status}</span> {html.escape(entry.test)}"
                    f" <small>{entry.duration:.1f}s</small></h3>")
         if entry.description:
             out.append(f"<p>{html.escape(entry.description)}</p>")
         if entry.params:
             params = ", ".join(f"{k} = {json.dumps(v, ensure_ascii=False)}" for k, v in entry.params.items())
-            out.append(f"<p class=params>{html.escape(params)}</p>")
+            out.append(f"<p>{html.escape(params)}</p>")
         for n, state in enumerate(s for s in entry.states if isinstance(s, dict)):
             label = f"app {n + 1} state" if len(entry.states) > 1 else "state"
             parts = [f"<b>{html.escape(k)}</b><pre>{html.escape(v)}</pre>"
@@ -116,38 +116,24 @@ class Report:
         for title, text in entry.notes:
             out.append(f"<b>{html.escape(title)}</b><pre>{html.escape(text)}</pre>")
         if entry.error:
-            out.append(f"<pre class=error>{html.escape(entry.error[-4000:])}</pre>")
+            out.append(f"<pre>{html.escape(entry.error[-4000:])}</pre>")
         for log in entry.logs:
             if log.strip():
                 out.append(f"<details><summary>app output</summary><pre>{html.escape(log)}</pre></details>")
-        if entry.shots:
-            out.append("<div class=shots>")
-            for caption, path in entry.shots:
-                data = base64.b64encode(Path(path).read_bytes()).decode()
-                out.append(f"<figure><img loading=lazy src='data:image/png;base64,{data}'>"
-                           f"<figcaption>{html.escape(caption)}</figcaption></figure>")
-            out.append("</div>")
+        for caption, path in entry.shots:
+            data = base64.b64encode(Path(path).read_bytes()).decode()
+            out.append(f"<figure><img loading=lazy src='data:image/png;base64,{data}'>"
+                       f"<figcaption>{html.escape(caption)}</figcaption></figure>")
         out.append("</div>")
         return "\n".join(out)
 
 
 HEAD = """<!doctype html><html><head><meta charset=utf-8><title>kuterm e2e report</title><style>
-body { font: 14px/1.4 system-ui, sans-serif; margin: 2em auto; max-width: 1400px; padding: 0 1em;
-       background: #fafafa; color: #222; }
-h2 { border-bottom: 1px solid #ccc; margin-top: 2em; }
-h3 { margin: 0 0 .3em; font-size: 15px; }
-h3 small { color: #888; font-weight: normal; }
-.meta { color: #666; }
-.badge { display: inline-block; padding: 0 .5em; border-radius: 3px; font-size: 12px; color: #fff; background: #888; }
-.badge.passed { background: #2e7d32; } .badge.failed { background: #c62828; } .badge.skipped { background: #b28704; }
-.case { background: #fff; border: 1px solid #ddd; border-left: 4px solid #2e7d32; margin: 1em 0; padding: .8em 1em; }
-.case.failed { border-left-color: #c62828; } .case.skipped { border-left-color: #b28704; }
-.params { font-family: monospace; color: #444; }
-pre { background: #f3f3f3; padding: .5em; overflow-x: auto; max-height: 30em; }
-pre.error { background: #fdecea; }
-.shots { display: flex; flex-wrap: wrap; gap: 1em; }
-figure { margin: 0; } figure img { max-width: 450px; border: 1px solid #ccc; display: block; }
-figure img:hover { max-width: 900px; }
-figcaption { color: #555; font-size: 12px; }
-table.toc td, table.toc th { padding: .2em 1em; text-align: left; }
+body { font: 14px sans-serif; margin: 1em; }
+.case { border-top: 1px solid #ccc; padding: .5em 0; }
+.passed { color: green; } .failed { color: red; } .skipped { color: orange; }
+pre { background: #f3f3f3; padding: .5em; overflow-x: auto; }
+figure { display: inline-block; margin: 0 1em 1em 0; }
+figure img { width: 450px; border: 1px solid #ccc; }
+td, th { padding: 0 1em; text-align: left; }
 </style></head><body>"""

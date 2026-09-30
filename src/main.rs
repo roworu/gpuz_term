@@ -43,6 +43,7 @@ fn init(cx: &mut App) {
     }
     let mut settings = Settings::load();
     cli.apply(&mut settings);
+    settings.use_installed_fonts(&cx.text_system().all_font_names());
     cx.set_global(settings);
     cx.set_global(TabIcons::load());
     cx.set_global(Commands::load());

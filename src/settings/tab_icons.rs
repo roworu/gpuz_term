@@ -9,7 +9,7 @@ use super::{config_dir, load_file, parse_over};
 use crate::cli::Cli;
 
 /// commented tab icons file written on first launch
-pub const DEFAULT_TAB_ICONS: &str = include_str!("../../assets/tab_icons.jsonc");
+pub const DEFAULT_TAB_ICONS: &str = include_str!("../../assets/default_tab_icons.jsonc");
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct IconGroup {
