@@ -13,6 +13,10 @@
   "text": "#383a42",
   "text_muted": "#6a6b70",
 
+  // buttons that destroy something, like "close" in the dialog asking to close a busy tab
+  "danger_button": "#e45649",
+  "danger_button_text": "#ffffff",
+
   // terminal
   "terminal_background": "#fafafa",
   "terminal_foreground": "#383a42",

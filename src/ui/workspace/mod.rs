@@ -25,10 +25,10 @@ use crate::{
         Command, CommandAction, Commands, Keybindings, Pins, Profile, Settings, TabIconSettings,
         TabIcons, TabTitleBlock,
     },
-    terminal::{Event, Terminal, TerminalBuilder},
+    terminal::{Event, Terminal, TerminalBuilder, foreground_process},
     theme::Theme,
     ui::{
-        command_palette::{About, CommandPalette},
+        command_palette::{About, CloseConfirmed, CommandPalette, ConfirmClose},
         terminal_view::TerminalView,
     },
 };
@@ -90,6 +90,8 @@ pub struct Workspace {
     palette: Option<Entity<CommandPalette>>,
     /// open about page, none while it is closed
     about: Option<Entity<About>>,
+    /// open close tab dialog, none while it is closed
+    confirm_close: Option<Entity<ConfirmClose>>,
     _overlay_subscriptions: Vec<Subscription>,
     /// labels of commands run from the palette, most recent first
     recent_commands: Vec<String>,
@@ -161,6 +163,7 @@ impl Workspace {
             profile_menu: None,
             palette: None,
             about: None,
+            confirm_close: None,
             _overlay_subscriptions: Vec::new(),
             recent_commands: Vec::new(),
             notifications: Vec::new(),
@@ -321,11 +324,51 @@ impl Workspace {
         true
     }
 
+    /// name of the program running in the tab at `ix`, none when only the shell is there
+    fn running_program(&self, ix: usize, cx: &App) -> Option<String> {
+        let shell_pid = self.terminal_at(ix, cx).read(cx).shell_pid;
+        foreground_process(shell_pid)
+            .filter(|process| process.pid != shell_pid)
+            .map(|process| process.name)
+    }
+
+    /// close the tab at `ix`, asking first when a program still runs in it
+    fn request_close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let warn = Settings::get(cx).close_running_tab_warn;
+        let Some(program) = warn.then(|| self.running_program(ix, cx)).flatten() else {
+            self.close_tab_at(ix, window, cx);
+            return;
+        };
+        let view = self.tabs[ix].view.clone();
+        let confirm = cx.new(|cx| ConfirmClose::new(program, view.entity_id(), cx));
+        self.open_overlay(&confirm, window, cx);
+        self._overlay_subscriptions.push(cx.subscribe_in(
+            &confirm,
+            window,
+            move |this, _, _: &CloseConfirmed, window, cx| {
+                this.close_overlay(window, cx);
+                // tabs may have moved or closed while the dialog was open
+                if let Some(ix) = this.tabs.iter().position(|tab| tab.view == view) {
+                    this.close_tab_at(ix, window, cx);
+                }
+            },
+        ));
+        self.confirm_close = Some(confirm);
+    }
+
     fn close_tab_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.tabs.remove(ix);
+        let closed = self.tabs.remove(ix).view.entity_id();
         if self.tabs.is_empty() {
             cx.quit();
             return;
+        }
+        // the shell may exit while its tab is asked about, leaving nothing to confirm
+        if self
+            .confirm_close
+            .as_ref()
+            .is_some_and(|confirm| confirm.read(cx).tab == closed)
+        {
+            self.close_overlay(window, cx);
         }
         // closing active tab activates one on its left
         // TODO: should be configurable
@@ -429,7 +472,7 @@ impl Workspace {
                     }
                 }
                 CommandAction::CloseTab => {
-                    self.close_tab_at(ix, window, cx);
+                    self.request_close_tab(ix, window, cx);
                     target = None;
                 }
                 CommandAction::NextTab => {
@@ -449,6 +492,7 @@ impl Workspace {
                         target = None;
                     }
                 }
+                CommandAction::PickTab => self.open_tab_picker(window, cx),
                 CommandAction::Copy => {
                     let selection = self.terminal_at(ix, cx).read(cx).selection_text();
                     let text = match selection {
@@ -511,6 +555,7 @@ impl Workspace {
     fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = None;
         self.about = None;
+        self.confirm_close = None;
         self._overlay_subscriptions.clear();
         if let Some(tab) = self.tabs.get(self.active) {
             tab.view.focus_handle(cx).focus(window, cx);
@@ -546,6 +591,30 @@ impl Workspace {
             |this, _, command: &Command, window, cx| {
                 this.close_overlay(window, cx);
                 this.record_recent(command.label());
+                this.run_command(command, window, cx);
+            },
+        ));
+        self.palette = Some(palette);
+    }
+
+    /// palette listing the open tabs, picking one switches to it
+    fn open_tab_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tabs = (0..self.tabs.len())
+            .map(|ix| Command {
+                name: self.tab_title(ix, cx),
+                category: Some((ix + 1).to_string()),
+                pinned: false,
+                actions: vec![CommandAction::ActivateTab(ix + 1)],
+            })
+            .collect();
+        let palette = cx.new(|cx| CommandPalette::tab_picker(tabs, cx));
+        self.open_overlay(&palette, window, cx);
+        // tabs change all the time, so picks are not remembered as recent commands
+        self._overlay_subscriptions.push(cx.subscribe_in(
+            &palette,
+            window,
+            |this, _, command: &Command, window, cx| {
+                this.close_overlay(window, cx);
                 this.run_command(command, window, cx);
             },
         ));
@@ -628,7 +697,7 @@ impl Workspace {
     }
 
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_tab_at(self.active, window, cx);
+        self.request_close_tab(self.active, window, cx);
     }
 
     fn next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -1436,9 +1505,59 @@ mod tests {
         // enter with nothing matched keeps the palette open
         type_keys(cx, "enter");
         assert!(palette_open(&ws, cx));
-        type_keys(cx, "backspace down down down up enter");
+        type_keys(cx, "backspace down up enter");
         assert!(!palette_open(&ws, cx));
         assert_eq!(views(&ws, cx).len(), 3);
+    }
+
+    #[gpui::test]
+    fn arrows_wrap_between_first_and_last_command(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        set_commands(
+            cx,
+            r#"{"commands": [
+                {"name": "first", "actions": ["new_tab"]},
+                {"name": "second", "actions": ["new_tab", "new_tab"]},
+            ]}"#,
+        );
+        // down from the last command wraps to the first one
+        type_keys(cx, "ctrl-shift-p down down enter");
+        assert!(!palette_open(&ws, cx));
+        assert_eq!(views(&ws, cx).len(), 2);
+        // up from the first command wraps to the last one, "first" is listed first as recent
+        type_keys(cx, "ctrl-shift-p up enter");
+        assert!(!palette_open(&ws, cx));
+        assert_eq!(views(&ws, cx).len(), 4);
+    }
+
+    #[gpui::test]
+    fn pick_tab_lists_tabs_and_switches_to_the_picked_one(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 3);
+        run_actions(&ws, cx, r#""pick_tab""#);
+        assert!(palette_open(&ws, cx));
+        assert!(palette_focused(&ws, cx));
+        let names = palette_names(&ws, cx);
+        assert_eq!(names.len(), 3);
+        for (ix, name) in names.iter().enumerate() {
+            assert!(name.starts_with(&format!("{}: ", ix + 1)), "{name}");
+        }
+        // tabs have no pins to click
+        assert!(cx.debug_bounds("pin-0").is_none());
+        type_keys(cx, "down enter");
+        assert!(!palette_open(&ws, cx));
+        assert_eq!(current(&ws, cx), 1);
+        // picked tabs are not remembered as recent commands
+        assert!(ws.update(cx, |ws, _| ws.recent_commands.is_empty()));
+    }
+
+    #[gpui::test]
+    fn close_button_follows_setting(cx: &mut TestAppContext) {
+        for show in [true, false] {
+            let json = format!(r#"{{"show_tab_close_button": {show}}}"#);
+            let settings = Settings::parse(&json).unwrap();
+            let (_, cx) = open_with_settings(cx, 2, "{}", settings);
+            assert_eq!(cx.debug_bounds("close-tab-1").is_some(), show);
+        }
     }
 
     #[gpui::test]
@@ -1887,6 +2006,109 @@ mod tests {
         assert_eq!(current(&ws, cx), 1);
         assert!(notifications(&ws, cx).is_empty());
         let _ = std::fs::remove_file(&file);
+    }
+
+    /// start a long program in the active tab and wait until it runs
+    fn start_program(ws: &Entity<Workspace>, cx: &mut VisualTestContext) {
+        ws.update(cx, |ws, cx| {
+            ws.input_to(ws.active, b"sleep 30\n".to_vec(), cx)
+        });
+        wait_until(cx, "sleep never started", |cx| {
+            ws.update(cx, |ws, cx| ws.running_program(ws.active, cx).is_some())
+        });
+    }
+
+    fn close_active(ws: &Entity<Workspace>, cx: &mut VisualTestContext) {
+        ws.update_in(cx, |ws, window, cx| ws.close_tab(&CloseTab, window, cx));
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn running_tab_asks_before_closing(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        start_program(&ws, cx);
+        close_active(&ws, cx);
+        assert_eq!(views(&ws, cx).len(), 2);
+        assert!(cx.debug_bounds("confirm-close").is_some());
+        assert!(ws.update_in(cx, |ws, window, cx| {
+            ws.confirm_close
+                .as_ref()
+                .is_some_and(|confirm| confirm.focus_handle(cx).is_focused(window))
+        }));
+
+        // escape keeps the tab and gives focus back to it
+        type_keys(cx, "escape");
+        assert!(cx.debug_bounds("confirm-close").is_none());
+        assert_eq!(views(&ws, cx).len(), 2);
+        assert_eq!(current(&ws, cx), 1);
+
+        close_active(&ws, cx);
+        type_keys(cx, "enter");
+        assert!(cx.debug_bounds("confirm-close").is_none());
+        assert_eq!(views(&ws, cx).len(), 1);
+        assert_eq!(current(&ws, cx), 0);
+    }
+
+    #[gpui::test]
+    fn arrows_pick_the_button_enter_presses(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        start_program(&ws, cx);
+        close_active(&ws, cx);
+        // "close" starts selected, left moves to "cancel"
+        type_keys(cx, "left enter");
+        assert!(cx.debug_bounds("confirm-close").is_none());
+        assert_eq!(views(&ws, cx).len(), 2);
+        assert_eq!(current(&ws, cx), 1);
+
+        close_active(&ws, cx);
+        type_keys(cx, "left right enter");
+        assert!(cx.debug_bounds("confirm-close").is_none());
+        assert_eq!(views(&ws, cx).len(), 1);
+    }
+
+    #[gpui::test]
+    fn dialog_closes_when_its_tab_exits(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        start_program(&ws, cx);
+        close_active(&ws, cx);
+        // ctrl-c stops sleep, then the shell exits and its tab closes by itself
+        terminal(&ws, cx, 1).update(cx, |terminal, _| terminal.input(b"\x03exit\n".to_vec()));
+        wait_until(cx, "tab never exited", |cx| views(&ws, cx).len() == 1);
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("confirm-close").is_none());
+        assert_eq!(current(&ws, cx), 0);
+    }
+
+    #[gpui::test]
+    fn close_button_in_dialog_closes_running_tab(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        start_program(&ws, cx);
+        run_actions(&ws, cx, r#""close_tab""#);
+        let button = cx.debug_bounds("confirm-close-ok").unwrap().center();
+        click(cx, button, 1);
+        release(cx, button);
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("confirm-close").is_none());
+        assert_eq!(views(&ws, cx).len(), 1);
+    }
+
+    #[gpui::test]
+    fn disabled_warning_closes_running_tab_at_once(cx: &mut TestAppContext) {
+        let settings = Settings::parse(r#"{"close_running_tab_warn": false}"#).unwrap();
+        let (ws, cx) = open_with_settings(cx, 2, "{}", settings);
+        start_program(&ws, cx);
+        close_active(&ws, cx);
+        assert!(cx.debug_bounds("confirm-close").is_none());
+        assert_eq!(views(&ws, cx).len(), 1);
+    }
+
+    #[gpui::test]
+    fn idle_tab_closes_without_asking(cx: &mut TestAppContext) {
+        let settings = Settings::parse(r#"{"close_running_tab_warn": true}"#).unwrap();
+        let (ws, cx) = open_with_settings(cx, 2, "{}", settings);
+        close_active(&ws, cx);
+        assert!(cx.debug_bounds("confirm-close").is_none());
+        assert_eq!(views(&ws, cx).len(), 1);
     }
 
     #[gpui::test]

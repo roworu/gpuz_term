@@ -39,6 +39,10 @@
     // icon of the shell and of programs without own icon
     "default": "",
   },
+  // show the "×" close button on the active tab and on hovered ones, middle click still closes tabs
+  "show_tab_close_button": true,
+  // ask before closing a tab while a program still runs in it, like vim or a long build
+  "close_running_tab_warn": true,
   // where the "+" new tab button sits: "left" or "right" end of the tab bar, or "after_tabs" next to the last tab
   "new_tab_button": "after_tabs",
   // window title, built from the active tab with the same blocks as "tab_title"

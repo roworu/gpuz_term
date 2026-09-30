@@ -20,6 +20,8 @@ pub struct Theme {
     pub cursor: Hsla,
     pub selection: Hsla,
     pub scrollbar: Hsla,
+    pub danger_button: Hsla,
+    pub danger_button_text: Hsla,
     /// 8 normal colors followed by 8 bright colors
     pub ansi: [Hsla; 16],
     pub ansi_dim: [Hsla; 8],

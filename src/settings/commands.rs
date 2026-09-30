@@ -31,6 +31,8 @@ pub enum CommandAction {
     PrevTab,
     /// switch to the tab at this 1 based position
     ActivateTab(usize),
+    /// list the open tabs in the palette, picking one switches to it
+    PickTab,
     /// copy the active tab's selection into the clipboard
     Copy,
     /// paste the clipboard into the active tab
@@ -133,7 +135,7 @@ mod tests {
                 "about", "reload_settings", "reload_themes", "reload_keybindings",
                 "reload_all", "new_tab", {"new_tab_with_profile": "dev"},
                 "new_background_tab", {"new_background_tab_with_profile": "dev"}, "close_tab",
-                "next_tab", "prev_tab", {"activate_tab": 2}, "copy", "paste",
+                "next_tab", "prev_tab", {"activate_tab": 2}, "pick_tab", "copy", "paste",
                 {"scroll_up": 10}, {"scroll_down": 3}, "scroll_top", "scroll_bottom",
                 "quit", {"type": "ls\n"}, {"notify": "hi"}, {"notify_when_done": "done"},
             ]}]}"#,
@@ -159,6 +161,7 @@ mod tests {
                     CommandAction::NextTab,
                     CommandAction::PrevTab,
                     CommandAction::ActivateTab(2),
+                    CommandAction::PickTab,
                     CommandAction::Copy,
                     CommandAction::Paste,
                     CommandAction::ScrollUp(10),

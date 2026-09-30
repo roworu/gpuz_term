@@ -1,9 +1,9 @@
-//! command palette and the about page it opens, both float over the terminal
+//! command palette, the about page it opens and the close tab dialog, all float over the terminal
 
 use gpui::{
-    App, Bounds, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
-    Pixels, ScrollHandle, Subscription, Window, canvas, div, fill, point, prelude::*, px, rems,
-    size,
+    App, Bounds, Context, DismissEvent, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
+    KeyDownEvent, Pixels, ScrollHandle, Subscription, Window, canvas, div, fill, point, prelude::*,
+    px, rems, size,
 };
 
 use crate::{
@@ -83,6 +83,8 @@ pub struct CommandPalette {
     scroll: ScrollHandle,
     /// labels of recently run commands, most recent first, empty when disabled
     recent: Vec<String>,
+    /// tab picker keeps the given order and has no pins
+    is_tab_picker: bool,
     _input_subscription: Subscription,
 }
 
@@ -92,7 +94,22 @@ impl EventEmitter<Command> for CommandPalette {}
 impl CommandPalette {
     /// palette listing `commands` with an empty query
     pub fn new(commands: Vec<Command>, recent: Vec<String>, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| TextInput::new("execute a command...", cx));
+        Self::build(commands, recent, "execute a command...", false, cx)
+    }
+
+    /// palette listing one command per tab, in tab order
+    pub fn tab_picker(tabs: Vec<Command>, cx: &mut Context<Self>) -> Self {
+        Self::build(tabs, Vec::new(), "go to tab...", true, cx)
+    }
+
+    fn build(
+        commands: Vec<Command>,
+        recent: Vec<String>,
+        placeholder: &'static str,
+        is_tab_picker: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let input = cx.new(|cx| TextInput::new(placeholder, cx));
         // a new query means a new best match
         let _input_subscription = cx.subscribe(&input, |this: &mut Self, _, _: &Changed, cx| {
             this.update_matches(cx);
@@ -106,6 +123,7 @@ impl CommandPalette {
             selected: 0,
             scroll: ScrollHandle::new(),
             recent,
+            is_tab_picker,
             _input_subscription,
         };
         palette.update_matches(cx);
@@ -125,19 +143,21 @@ impl CommandPalette {
             .filter(|&ix| fuzzy_match(&self.commands[ix].label(), query))
             .collect();
         // cached so each label is built once instead of on every comparison
-        matches.sort_by_cached_key(|&ix| {
-            let command = &self.commands[ix];
-            let label = command.label();
-            let recent = self.recent.iter().position(|recent| *recent == label);
-            (
-                !pins.is_pinned(command),
-                recent.unwrap_or(usize::MAX),
-                // categorized commands come first, each group in name order
-                command.category.is_none(),
-                &command.category,
-                &command.name,
-            )
-        });
+        if !self.is_tab_picker {
+            matches.sort_by_cached_key(|&ix| {
+                let command = &self.commands[ix];
+                let label = command.label();
+                let recent = self.recent.iter().position(|recent| *recent == label);
+                (
+                    !pins.is_pinned(command),
+                    recent.unwrap_or(usize::MAX),
+                    // categorized commands come first, each group in name order
+                    command.category.is_none(),
+                    &command.category,
+                    &command.name,
+                )
+            });
+        }
         self.matches = matches;
     }
 
@@ -205,8 +225,13 @@ impl CommandPalette {
         match event.keystroke.key.as_str() {
             "escape" => cx.emit(DismissEvent),
             "enter" => self.confirm(self.selected, cx),
-            "up" => self.select(self.selected.saturating_sub(1)),
-            "down" => self.select((self.selected + 1).min(self.matches.len().saturating_sub(1))),
+            // arrows wrap around between the first and the last command
+            "up" => self.select(
+                self.selected
+                    .checked_sub(1)
+                    .unwrap_or(self.matches.len().saturating_sub(1)),
+            ),
+            "down" => self.select((self.selected + 1) % self.matches.len().max(1)),
             _ => return,
         }
         cx.stop_propagation();
@@ -249,42 +274,44 @@ impl Render for CommandPalette {
                         )
                     })
                     .child(command.name.clone())
-                    .child(
-                        div()
-                            .id(("pin", ix))
-                            .debug_selector(move || format!("pin-{ix}"))
-                            .ml_auto()
-                            .group("pin")
-                            .text_color(theme.text_muted)
-                            // unpinned commands only show their pin while the row is hovered
-                            .when(!pinned, |pin| {
-                                pin.invisible().group_hover("command", |pin| pin.visible())
-                            })
-                            .relative()
-                            .child(
-                                div()
-                                    .when(pinned, |icon| {
-                                        icon.group_hover("pin", |icon| icon.invisible())
-                                    })
-                                    .child(PIN_ICON),
-                            )
-                            .child(
-                                // covers the pin, shown while hovered to hint the click unpins
-                                div()
-                                    .absolute()
-                                    .top_0()
-                                    .left_0()
-                                    .invisible()
-                                    .when(pinned, |icon| {
-                                        icon.group_hover("pin", |icon| icon.visible())
-                                    })
-                                    .child(UNPIN_ICON),
-                            )
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.toggle_pin(ix, cx);
-                            })),
-                    )
+                    .when(!self.is_tab_picker, |item| {
+                        item.child(
+                            div()
+                                .id(("pin", ix))
+                                .debug_selector(move || format!("pin-{ix}"))
+                                .ml_auto()
+                                .group("pin")
+                                .text_color(theme.text_muted)
+                                // unpinned commands only show their pin while the row is hovered
+                                .when(!pinned, |pin| {
+                                    pin.invisible().group_hover("command", |pin| pin.visible())
+                                })
+                                .relative()
+                                .child(
+                                    div()
+                                        .when(pinned, |icon| {
+                                            icon.group_hover("pin", |icon| icon.invisible())
+                                        })
+                                        .child(PIN_ICON),
+                                )
+                                .child(
+                                    // covers the pin, shown while hovered to hint the click unpins
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .invisible()
+                                        .when(pinned, |icon| {
+                                            icon.group_hover("pin", |icon| icon.visible())
+                                        })
+                                        .child(UNPIN_ICON),
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.toggle_pin(ix, cx);
+                                })),
+                        )
+                    })
                     .when(ix == self.selected, |item| {
                         item.bg(theme.tab_active_background)
                     })
@@ -408,6 +435,111 @@ impl Render for About {
                     .pt_2()
                     .text_color(theme.text_muted)
                     .child("press any key to close"),
+            )
+    }
+}
+
+/// emitted when closing the tab is confirmed
+pub struct CloseConfirmed;
+
+/// asks before closing a tab with a program still running in it
+pub struct ConfirmClose {
+    focus_handle: FocusHandle,
+    program: String,
+    /// view of the tab asked about
+    pub tab: EntityId,
+    /// true while "close" is the button enter presses, false for "cancel"
+    close_selected: bool,
+}
+
+impl EventEmitter<DismissEvent> for ConfirmClose {}
+impl EventEmitter<CloseConfirmed> for ConfirmClose {}
+
+impl ConfirmClose {
+    /// dialog naming the `program` running in `tab`, ready to be focused
+    pub fn new(program: String, tab: EntityId, cx: &mut Context<Self>) -> Self {
+        Self {
+            focus_handle: cx.focus_handle(),
+            program,
+            tab,
+            close_selected: true,
+        }
+    }
+
+    fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        match event.keystroke.key.as_str() {
+            "enter" if self.close_selected => cx.emit(CloseConfirmed),
+            "enter" => cx.emit(DismissEvent),
+            "y" => cx.emit(CloseConfirmed),
+            "escape" | "n" => cx.emit(DismissEvent),
+            // "cancel" sits left of "close"
+            "left" | "up" => self.close_selected = false,
+            "right" | "down" => self.close_selected = true,
+            _ => {}
+        }
+        cx.notify();
+        // other keys must not reach the terminal behind the dialog
+        cx.stop_propagation();
+    }
+}
+
+impl Focusable for ConfirmClose {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for ConfirmClose {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::get(cx);
+        // the selected button is outlined in the text color, it is the one enter presses
+        let button = |id: &'static str, label: &'static str, selected: bool| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .px_3()
+                .py_1()
+                .rounded_sm()
+                .border_1()
+                .border_color(if selected { theme.text } else { theme.border })
+                .child(label)
+        };
+        panel(theme)
+            .id("confirm-close")
+            .debug_selector(|| "confirm-close".into())
+            .track_focus(&self.focus_handle)
+            .key_context("ConfirmClose")
+            .on_key_down(cx.listener(Self::key_down))
+            .occlude()
+            .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
+            .p_4()
+            .gap_2()
+            .child(format!("\"{}\" is still running in this tab", self.program))
+            .child(
+                div()
+                    .text_color(theme.text_muted)
+                    .child("close it anyway? arrows pick a button, escape cancels"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        button("confirm-close-cancel", "cancel", !self.close_selected)
+                            .when(!self.close_selected, |button| {
+                                button.bg(theme.tab_active_background)
+                            })
+                            .hover(|button| button.bg(theme.tab_active_background))
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
+                    )
+                    .child(
+                        button("confirm-close-ok", "close", self.close_selected)
+                            .bg(theme.danger_button)
+                            .text_color(theme.danger_button_text)
+                            .hover(|button| button.opacity(0.85))
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseConfirmed))),
+                    ),
             )
     }
 }

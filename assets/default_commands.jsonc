@@ -32,6 +32,7 @@
 //   "next_tab"                         - switch to the tab on the right
 //   "prev_tab"                         - switch to the tab on the left
 //   { "activate_tab": 2 }              - switch to the tab at this 1 based position
+//   "pick_tab"                         - list the open tabs in the palette, pick one to switch to it
 //   "copy"                             - copy the active tab's selection to the clipboard
 //   "paste"                            - paste the clipboard into the active tab
 //   { "scroll_up": 10 }                - scroll the active tab up by this many lines
@@ -62,7 +63,7 @@
     { "name": "close current", "category": "tabs", "actions": ["close_tab"] },
     { "name": "switch to left", "category": "tabs", "actions": ["prev_tab"] },
     { "name": "switch to right", "category": "tabs", "actions": ["next_tab"] },
-    { "name": "go to tab 2", "category": "tabs", "actions": [{ "activate_tab": 2 }] },
+    { "name": "go to tab", "category": "tabs", "actions": ["pick_tab"] },
 
     { "name": "scroll to top", "category": "view", "actions": ["scroll_top"] },
     { "name": "scroll to bottom", "category": "view", "actions": ["scroll_bottom"] },

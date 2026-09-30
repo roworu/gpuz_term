@@ -4,8 +4,8 @@
 use std::sync::LazyLock;
 
 use gpui::{
-    AnyElement, Context, Div, MouseButton, ScrollHandle, Stateful, Window, anchored, deferred, div,
-    prelude::*, px, rems,
+    AnyElement, App, Context, Div, MouseButton, ScrollHandle, Stateful, Window, anchored, deferred,
+    div, prelude::*, px, rems,
 };
 use skrifa::{
     FontRef, MetadataProvider,
@@ -103,12 +103,11 @@ fn tab(ix: usize, title: String, icon: String, settings: &Settings) -> Stateful<
 }
 
 impl Workspace {
-    fn render_tab(&self, ix: usize, cx: &Context<Self>) -> Stateful<Div> {
-        let is_active = ix == self.active;
-        let theme = Theme::get(cx);
+    /// title shown for the tab at `ix`, also listed by the tab picker
+    pub(super) fn tab_title(&self, ix: usize, cx: &App) -> String {
         let tab_state = &self.tabs[ix];
         // the program title stands in until the first refresh, or when the blocks are empty
-        let title = if tab_state.title.is_empty() {
+        if tab_state.title.is_empty() {
             tab_state
                 .view
                 .read(cx)
@@ -117,25 +116,38 @@ impl Workspace {
                 .title(&Settings::get(cx).default_title)
         } else {
             tab_state.title.clone()
-        };
-        tab(ix, title, tab_state.icon.clone(), Settings::get(cx))
-            .group("tab")
-            .border_r_1()
-            .border_color(theme.border)
-            .when(is_active, |tab| tab.bg(theme.tab_active_background))
-            .text_color(if is_active {
-                theme.text
-            } else {
-                theme.text_muted
-            })
-            .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(ix, window, cx)))
-            .on_mouse_down(
-                MouseButton::Middle,
-                cx.listener(move |this, _, window, cx| this.close_tab_at(ix, window, cx)),
-            )
-            .child(
+        }
+    }
+
+    fn render_tab(&self, ix: usize, cx: &Context<Self>) -> Stateful<Div> {
+        let is_active = ix == self.active;
+        let theme = Theme::get(cx);
+        let settings = Settings::get(cx);
+        tab(
+            ix,
+            self.tab_title(ix, cx),
+            self.tabs[ix].icon.clone(),
+            settings,
+        )
+        .group("tab")
+        .border_r_1()
+        .border_color(theme.border)
+        .when(is_active, |tab| tab.bg(theme.tab_active_background))
+        .text_color(if is_active {
+            theme.text
+        } else {
+            theme.text_muted
+        })
+        .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(ix, window, cx)))
+        .on_mouse_down(
+            MouseButton::Middle,
+            cx.listener(move |this, _, window, cx| this.request_close_tab(ix, window, cx)),
+        )
+        .when(settings.show_tab_close_button, |tab| {
+            tab.child(
                 div()
                     .id(("close-tab", ix))
+                    .debug_selector(move || format!("close-tab-{ix}"))
                     .px_1()
                     .rounded_sm()
                     .invisible()
@@ -145,9 +157,10 @@ impl Workspace {
                     .child("×")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
-                        this.close_tab_at(ix, window, cx);
+                        this.request_close_tab(ix, window, cx);
                     })),
             )
+        })
     }
 
     /// profile list opened with a right click on "+", picking one opens a tab with it
@@ -194,11 +207,12 @@ impl Workspace {
         )
     }
 
-    /// command palette or about page, centered near the top like in zed
+    /// command palette, about page or close tab dialog, centered near the top like in zed
     fn render_overlay(&self) -> Option<AnyElement> {
-        let view = match (&self.palette, &self.about) {
-            (Some(palette), _) => palette.clone().into_any_element(),
-            (_, Some(about)) => about.clone().into_any_element(),
+        let view = match (&self.palette, &self.about, &self.confirm_close) {
+            (Some(palette), _, _) => palette.clone().into_any_element(),
+            (_, Some(about), _) => about.clone().into_any_element(),
+            (_, _, Some(confirm)) => confirm.clone().into_any_element(),
             _ => return None,
         };
         Some(
