@@ -1,0 +1,158 @@
+"""theme colors as painted on screen: bundled dark and light, custom files, broken files, system mode"""
+
+import pytest
+
+from harness import App, Portal, as_rgb, bundled_theme, close_to, dominant, rgb, unique_theme
+
+FEATURE = "theme"
+
+# 16 blocks of 3 cells with ansi background colors, then 8 blocks of dim foreground colors
+PALETTE = (
+    "for i in 0 1 2 3 4 5 6 7; do printf '\\033[4%sm   ' $i; done; printf '\\033[0m'\n"
+    "for i in 0 1 2 3 4 5 6 7; do printf '\\033[10%sm   ' $i; done; printf '\\033[0m\\n'\n"
+    "for i in 0 1 2 3 4 5 6 7; do printf '\\033[2;3%sm\\342\\226\\210\\342\\226\\210\\342\\226\\210' $i; done;"
+    " printf '\\033[0m\\n'\n"
+    "printf '\\033[2m\\342\\226\\210\\342\\226\\210\\342\\226\\210\\033[0m\\n'\n"
+)
+
+NONE, PREFER_DARK, PREFER_LIGHT = 0, 1, 2
+
+
+def check_palette(app: App, theme: dict) -> None:
+    """every ansi, dim and background color of the theme is on screen where printed"""
+    app.wait(lambda: close_to(app.cells_color(45, 0, 3), theme["ansi"][15], 3), msg="palette printed")
+    # the system color scheme may arrive after the first frame
+    app.wait(lambda: close_to(dominant(app.shot()), theme["terminal_background"]), msg="theme background")
+    img = app.shot()
+    assert close_to(dominant(img), theme["terminal_background"])
+    for i in range(16):
+        assert close_to(app.cells_color(i * 3, 0, 3, img), theme["ansi"][i], 3), f"ansi {i}"
+    for i in range(8):
+        assert close_to(app.cells_color(i * 3, 1, 3, img), theme["ansi_dim"][i], 3), f"ansi_dim {i}"
+    assert close_to(app.cells_color(0, 2, 3, img), theme["dim_foreground"], 3), "dim_foreground"
+
+
+@pytest.mark.parametrize("mode", ["dark", "light"])
+def test_bundled_theme(app_factory, mode):
+    """bundled theme colors: background, 16 ansi colors, dim colors"""
+    app = app_factory({"theme": {"mode": mode}}, script=PALETTE)
+    check_palette(app, bundled_theme(mode == "dark"))
+
+
+@pytest.mark.parametrize("mode", ["dark", "light"])
+def test_custom_theme_file(app_factory, mode):
+    """a full custom theme file paints every color, tab bar included"""
+    theme = unique_theme(0x30 if mode == "dark" else 0x90)
+    app = app_factory({"theme": {"mode": mode}, "hide_bar_for_one_tab": False}, script=PALETTE,
+                      files={f"themes/{mode}.jsonc": theme})
+    colors = as_rgb(theme)
+    top = app.bar_height()
+    app.wait(lambda: close_to(app.cells_color(45, 0, 3, top=top), colors["ansi"][15], 3), msg="palette")
+    img = app.shot()
+    for i in range(16):
+        assert close_to(app.cells_color(i * 3, 0, 3, img, top=top), colors["ansi"][i], 3), f"ansi {i}"
+    # the only tab is active, the rest of the bar is bar background
+    assert close_to(tuple(img[top // 2, 900 - 5]), colors["tab_bar_background"])
+    assert close_to(tuple(img[top // 2, 3]), colors["tab_active_background"])
+    assert close_to(tuple(img[top - 1, 450]), colors["border"])
+
+
+@pytest.mark.parametrize("mode", ["dark", "light"])
+def test_partial_theme_keeps_bundled_colors(app_factory, mode):
+    """a theme file with a few colors keeps the bundled ones for the rest"""
+    app = app_factory({"theme": {"mode": mode}}, script=PALETTE,
+                      files={f"themes/{mode}.jsonc": {"terminal_background": "#102030"}})
+    theme = dict(bundled_theme(mode == "dark"), terminal_background=(0x10, 0x20, 0x30))
+    check_palette(app, theme)
+
+
+@pytest.mark.parametrize("mode", ["dark", "light"])
+def test_theme_of_other_mode_is_not_used(app_factory, mode):
+    """the custom file of the other mode does not leak into this one"""
+    other = "light" if mode == "dark" else "dark"
+    app = app_factory({"theme": {"mode": mode}}, files={f"themes/{other}.jsonc": unique_theme(0x50)})
+    theme = bundled_theme(mode == "dark")
+    app.wait(lambda: close_to(dominant(app.shot()), theme["terminal_background"]), msg="bundled background")
+
+
+@pytest.mark.parametrize("mode", ["dark", "light"])
+def test_null_theme_path_uses_bundled(app_factory, mode):
+    """a null theme path uses the bundled theme and creates no file"""
+    app = app_factory({"theme": {"mode": mode, mode: None}})
+    theme = bundled_theme(mode == "dark")
+    app.wait(lambda: close_to(dominant(app.shot()), theme["terminal_background"]), msg="bundled background")
+    assert not (app.config / f"themes/{mode}.jsonc").exists()
+
+
+@pytest.mark.parametrize("content", ["{", '{"ansi": ["#fff"]}', '{"cursor": "red"}'])
+def test_broken_theme_file_falls_back_to_bundled(app_factory, content):
+    """an invalid theme file prints an error and paints the bundled theme"""
+    app = app_factory({"theme": {"mode": "dark"}}, script=PALETTE, files={"themes/dark.jsonc": content})
+    check_palette(app, bundled_theme(True))
+    assert "invalid theme" in app.output()
+
+
+def test_missing_theme_files_are_created(app_factory):
+    """missing theme files are created as copies of the bundled ones"""
+    app = app_factory({"theme": {"mode": "dark", "dark": "t/d.jsonc", "light": "t/l.jsonc"}})
+    app.wait(lambda: (app.config / "t/d.jsonc").exists() and (app.config / "t/l.jsonc").exists(),
+             msg="theme files")
+
+
+@pytest.mark.parametrize("value,expected", [("#f0f", "#ff00ff"), ("#f0f8", "#ff00ff"),
+                                            ("#123456", "#123456"), ("#12345678", "#123456")])
+def test_hex_color_formats(app_factory, value, expected):
+    """#rgb, #rgba, #rrggbb and #rrggbbaa colors are accepted"""
+    app = app_factory({"theme": {"mode": "dark"}}, files={"themes/dark.jsonc": {"terminal_background": value}})
+    # alpha blends with black, so only the hue is compared for alpha values
+    got = dominant(app.shot())
+    if len(value) in (5, 9):
+        assert got != bundled_theme(True)["terminal_background"]
+    else:
+        assert close_to(got, rgb(expected))
+
+
+@pytest.fixture
+def portal():
+    portals = []
+
+    def start(scheme: int) -> Portal:
+        portals.append(Portal(scheme))
+        return portals[-1]
+
+    yield start
+    for p in portals:
+        p.stop()
+
+
+@pytest.mark.parametrize("scheme,dark", [(PREFER_DARK, True), (PREFER_LIGHT, False)], ids=["dark", "light"])
+def test_system_mode_follows_desktop(app_factory, portal, scheme, dark):
+    """theme.mode system picks dark or light from the desktop color scheme"""
+    portal(scheme)
+    app = app_factory({"theme": {"mode": "system"}}, script=PALETTE)
+    check_palette(app, bundled_theme(dark))
+
+
+def test_system_mode_switches_live(app_factory, portal):
+    """switching the desktop color scheme recolors the running terminal"""
+    p = portal(PREFER_DARK)
+    app = app_factory({"theme": {"mode": "system"}}, script=PALETTE)
+    check_palette(app, bundled_theme(True))
+    app.snap("desktop prefers dark")
+    p.set(PREFER_LIGHT)
+    check_palette(app, bundled_theme(False))
+    app.snap("desktop switched to light")
+    p.set(PREFER_DARK)
+    check_palette(app, bundled_theme(True))
+
+
+@pytest.mark.parametrize("mode", ["dark", "light"])
+def test_fixed_mode_ignores_desktop(app_factory, portal, mode):
+    """theme.mode dark or light stays put when the desktop switches"""
+    p = portal(PREFER_LIGHT if mode == "dark" else PREFER_DARK)
+    app = app_factory({"theme": {"mode": mode}})
+    theme = bundled_theme(mode == "dark")
+    app.wait(lambda: close_to(dominant(app.shot()), theme["terminal_background"]), msg="fixed theme")
+    p.set(PREFER_DARK if mode == "dark" else PREFER_LIGHT)
+    p.set(PREFER_LIGHT if mode == "dark" else PREFER_DARK)
+    assert close_to(dominant(app.shot()), theme["terminal_background"])

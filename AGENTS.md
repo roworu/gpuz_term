@@ -24,6 +24,13 @@ podman run --rm -v "$PWD":/src:Z \
   kuterm-dev cargo test <test_name>
 ```
 
+e2e tests drive the real binary on xvfb and check pixels (`e2e/`, pytest). they run as the last step of the release workflow and write `e2e/artifacts/report.html` with screenshots of every tested feature:
+
+```bash
+# all of them, or pass pytest args like -k palette
+sh e2e/run.sh
+```
+
 CI also runs `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`. container output goes to `target/podman/`. gpui and alacritty are pinned to same git revision in `Cargo.toml`; bump them together.
 
 ## Architecture
