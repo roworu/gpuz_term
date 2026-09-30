@@ -30,17 +30,6 @@ impl TerminalModifiers {
             _ => TerminalModifiers::Other,
         }
     }
-
-    fn any(&self) -> bool {
-        match &self {
-            TerminalModifiers::None => false,
-            TerminalModifiers::Alt => true,
-            TerminalModifiers::Ctrl => true,
-            TerminalModifiers::Shift => true,
-            TerminalModifiers::CtrlShift => true,
-            TerminalModifiers::Other => true,
-        }
-    }
 }
 
 pub(crate) fn to_esc_str(
@@ -49,6 +38,7 @@ pub(crate) fn to_esc_str(
     option_as_meta: bool,
 ) -> Option<Cow<'static, str>> {
     let modifiers = TerminalModifiers::new(keystroke);
+    let app_cursor = mode.contains(TermMode::APP_CURSOR);
 
     // manual bindings including modifiers
     let manual_esc_str: Option<&'static str> = match (keystroke.key.as_ref(), &modifiers) {
@@ -84,6 +74,12 @@ pub(crate) fn to_esc_str(
         ("delete", TerminalModifiers::None) => Some("\x1b[3~"),
         ("pageup", TerminalModifiers::None) => Some("\x1b[5~"),
         ("pagedown", TerminalModifiers::None) => Some("\x1b[6~"),
+        ("home", TerminalModifiers::None) => Some(if app_cursor { "\x1bOH" } else { "\x1b[H" }),
+        ("end", TerminalModifiers::None) => Some(if app_cursor { "\x1bOF" } else { "\x1b[F" }),
+        ("up", TerminalModifiers::None) => Some(if app_cursor { "\x1bOA" } else { "\x1b[A" }),
+        ("down", TerminalModifiers::None) => Some(if app_cursor { "\x1bOB" } else { "\x1b[B" }),
+        ("right", TerminalModifiers::None) => Some(if app_cursor { "\x1bOC" } else { "\x1b[C" }),
+        ("left", TerminalModifiers::None) => Some(if app_cursor { "\x1bOD" } else { "\x1b[D" }),
         ("f1", TerminalModifiers::None) => Some("\x1bOP"),
         ("f2", TerminalModifiers::None) => Some("\x1bOQ"),
         ("f3", TerminalModifiers::None) => Some("\x1bOR"),
@@ -104,59 +100,6 @@ pub(crate) fn to_esc_str(
         ("f18", TerminalModifiers::None) => Some("\x1b[32~"),
         ("f19", TerminalModifiers::None) => Some("\x1b[33~"),
         ("f20", TerminalModifiers::None) => Some("\x1b[34~"),
-        // mappings for caret notation keys
-        ("a", TerminalModifiers::Ctrl) => Some("\x01"), //1
-        ("A", TerminalModifiers::CtrlShift) => Some("\x01"), //1
-        ("b", TerminalModifiers::Ctrl) => Some("\x02"), //2
-        ("B", TerminalModifiers::CtrlShift) => Some("\x02"), //2
-        ("c", TerminalModifiers::Ctrl) => Some("\x03"), //3
-        ("C", TerminalModifiers::CtrlShift) => Some("\x03"), //3
-        ("d", TerminalModifiers::Ctrl) => Some("\x04"), //4
-        ("D", TerminalModifiers::CtrlShift) => Some("\x04"), //4
-        ("e", TerminalModifiers::Ctrl) => Some("\x05"), //5
-        ("E", TerminalModifiers::CtrlShift) => Some("\x05"), //5
-        ("f", TerminalModifiers::Ctrl) => Some("\x06"), //6
-        ("F", TerminalModifiers::CtrlShift) => Some("\x06"), //6
-        ("g", TerminalModifiers::Ctrl) => Some("\x07"), //7
-        ("G", TerminalModifiers::CtrlShift) => Some("\x07"), //7
-        ("h", TerminalModifiers::Ctrl) => Some("\x08"), //8
-        ("H", TerminalModifiers::CtrlShift) => Some("\x08"), //8
-        ("i", TerminalModifiers::Ctrl) => Some("\x09"), //9
-        ("I", TerminalModifiers::CtrlShift) => Some("\x09"), //9
-        ("j", TerminalModifiers::Ctrl) => Some("\x0a"), //10
-        ("J", TerminalModifiers::CtrlShift) => Some("\x0a"), //10
-        ("k", TerminalModifiers::Ctrl) => Some("\x0b"), //11
-        ("K", TerminalModifiers::CtrlShift) => Some("\x0b"), //11
-        ("l", TerminalModifiers::Ctrl) => Some("\x0c"), //12
-        ("L", TerminalModifiers::CtrlShift) => Some("\x0c"), //12
-        ("m", TerminalModifiers::Ctrl) => Some("\x0d"), //13
-        ("M", TerminalModifiers::CtrlShift) => Some("\x0d"), //13
-        ("n", TerminalModifiers::Ctrl) => Some("\x0e"), //14
-        ("N", TerminalModifiers::CtrlShift) => Some("\x0e"), //14
-        ("o", TerminalModifiers::Ctrl) => Some("\x0f"), //15
-        ("O", TerminalModifiers::CtrlShift) => Some("\x0f"), //15
-        ("p", TerminalModifiers::Ctrl) => Some("\x10"), //16
-        ("P", TerminalModifiers::CtrlShift) => Some("\x10"), //16
-        ("q", TerminalModifiers::Ctrl) => Some("\x11"), //17
-        ("Q", TerminalModifiers::CtrlShift) => Some("\x11"), //17
-        ("r", TerminalModifiers::Ctrl) => Some("\x12"), //18
-        ("R", TerminalModifiers::CtrlShift) => Some("\x12"), //18
-        ("s", TerminalModifiers::Ctrl) => Some("\x13"), //19
-        ("S", TerminalModifiers::CtrlShift) => Some("\x13"), //19
-        ("t", TerminalModifiers::Ctrl) => Some("\x14"), //20
-        ("T", TerminalModifiers::CtrlShift) => Some("\x14"), //20
-        ("u", TerminalModifiers::Ctrl) => Some("\x15"), //21
-        ("U", TerminalModifiers::CtrlShift) => Some("\x15"), //21
-        ("v", TerminalModifiers::Ctrl) => Some("\x16"), //22
-        ("V", TerminalModifiers::CtrlShift) => Some("\x16"), //22
-        ("w", TerminalModifiers::Ctrl) => Some("\x17"), //23
-        ("W", TerminalModifiers::CtrlShift) => Some("\x17"), //23
-        ("x", TerminalModifiers::Ctrl) => Some("\x18"), //24
-        ("X", TerminalModifiers::CtrlShift) => Some("\x18"), //24
-        ("y", TerminalModifiers::Ctrl) => Some("\x19"), //25
-        ("Y", TerminalModifiers::CtrlShift) => Some("\x19"), //25
-        ("z", TerminalModifiers::Ctrl) => Some("\x1a"), //26
-        ("Z", TerminalModifiers::CtrlShift) => Some("\x1a"), //26
         ("@", TerminalModifiers::Ctrl) => Some("\x00"), //0
         ("[", TerminalModifiers::Ctrl) => Some("\x1b"), //27
         ("\\", TerminalModifiers::Ctrl) => Some("\x1c"), //28
@@ -170,8 +113,16 @@ pub(crate) fn to_esc_str(
         return Some(Cow::Borrowed(esc_str));
     }
 
+    // caret notation: ctrl-a..z and ctrl-shift-A..Z send 0x01..0x1a
+    if let [key] = keystroke.key.as_bytes()
+        && ((modifiers == TerminalModifiers::Ctrl && key.is_ascii_lowercase())
+            || (modifiers == TerminalModifiers::CtrlShift && key.is_ascii_uppercase()))
+    {
+        return Some(Cow::Owned(char::from(key & 0x1f).to_string()));
+    }
+
     // automated bindings applying modifiers
-    if modifiers.any() {
+    if modifiers != TerminalModifiers::None {
         let modifier_code = modifier_code(keystroke);
         let modified_esc_str = match keystroke.key.as_ref() {
             "up" => Some(format!("\x1b[1;{}A", modifier_code)),
@@ -245,17 +196,8 @@ pub(crate) fn to_esc_str(
 /// ---------+---------------------------
 /// from: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-PC-Style-Function-Keys
 fn modifier_code(keystroke: &Keystroke) -> u32 {
-    let mut modifier_code = 0;
-    if keystroke.modifiers.shift {
-        modifier_code |= 1;
-    }
-    if keystroke.modifiers.alt {
-        modifier_code |= 1 << 1;
-    }
-    if keystroke.modifiers.control {
-        modifier_code |= 1 << 2;
-    }
-    modifier_code + 1
+    let m = &keystroke.modifiers;
+    1 + m.shift as u32 + ((m.alt as u32) << 1) + ((m.control as u32) << 2)
 }
 
 #[cfg(test)]

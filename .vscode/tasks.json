@@ -15,6 +15,18 @@
       "reveal": "always"
     },
     {
+      // e2e tests: real binary on xvfb inside podman, report in e2e/artifacts/report.html
+      "label": "podman: e2e tests",
+      "type": "shell",
+      "command": "${workspaceFolder}/e2e/run.sh",
+      "cwd": "${workspaceFolder}",
+      "save": "all",
+      "useNewTerminal": false,
+      "parallel": false,
+      "problemMatcher": [],
+      "reveal": "always"
+    },
+    {
       // run build made by podman
       "label": "run app",
       "command": "./target/podman/debug/kuterm",

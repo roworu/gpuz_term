@@ -2,6 +2,7 @@
 
 use alacritty_terminal::{
     Term,
+    grid::Dimensions,
     index::Point as AlacPoint,
     selection::SelectionRange,
     term::{RenderableCursor, TermMode, cell::Cell},
@@ -21,6 +22,7 @@ pub struct Content {
     pub selection: Option<SelectionRange>,
     pub mode: TermMode,
     pub display_offset: usize,
+    pub history_size: usize,
     pub cursor: RenderableCursor,
     pub cursor_char: char,
     pub terminal_bounds: TerminalBounds,
@@ -33,6 +35,7 @@ impl Default for Content {
             selection: None,
             mode: TermMode::empty(),
             display_offset: 0,
+            history_size: 0,
             cursor: RenderableCursor {
                 shape: alacritty_terminal::vte::ansi::CursorShape::Block,
                 point: AlacPoint::default(),
@@ -56,6 +59,7 @@ impl Content {
         self.selection = content.selection;
         self.mode = content.mode;
         self.display_offset = content.display_offset;
+        self.history_size = term.grid().history_size();
         self.cursor = content.cursor;
         self.cursor_char = term.grid()[content.cursor.point].c;
     }

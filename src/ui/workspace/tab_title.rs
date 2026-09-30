@@ -17,6 +17,7 @@ pub(super) struct TitleInputs {
     pub number: usize,
     pub shell_pid: u32,
     pub title: String,
+    pub profile_icon: Option<String>,
 }
 
 /// join blocks into a title, may block on /proc reads and exec commands
@@ -134,6 +135,7 @@ mod tests {
             number: 3,
             shell_pid: std::process::id(),
             title: "vim".into(),
+            profile_icon: None,
         };
         build_title(blocks, &inputs)
     }

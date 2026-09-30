@@ -33,9 +33,7 @@ impl Terminal {
             AlacTermEvent::ColorRequest(index, format) => {
                 // answer inline so replies keep their order relative to other pty writes
                 let color = self.term.lock().colors()[index].unwrap_or_else(|| {
-                    let rgba: gpui::Rgba = crate::theme::Theme::get(cx)
-                        .get_color_at_index(index)
-                        .into();
+                    let rgba: gpui::Rgba = self.theme(cx).get_color_at_index(index).into();
                     alacritty_terminal::vte::ansi::Rgb {
                         r: (rgba.r * 255.).round() as u8,
                         g: (rgba.g * 255.).round() as u8,

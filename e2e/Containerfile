@@ -1,0 +1,17 @@
+# e2e tests: the real binary on a virtual x display, checked by pixels.
+# same ubuntu as the release runner, so the released binary runs here as is
+FROM docker.io/library/ubuntu:26.04
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        xvfb xauth x11-utils x11-xserver-utils xdotool xclip openbox \
+        libxkbcommon-x11-0 libx11-xcb1 libxcb1 libwayland-client0 libfontconfig1 libfreetype6 \
+        mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri \
+        fonts-dejavu-core fontconfig \
+        dbus dbus-daemon python3 python3-pytest python3-pil python3-numpy python3-dbus python3-gi \
+        bash procps psmisc \
+    && rm -rf /var/lib/apt/lists/*
+
+# lavapipe is the only vulkan device, pin it so wgpu never waits for others
+ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
+WORKDIR /src

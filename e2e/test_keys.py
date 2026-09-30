@@ -1,0 +1,220 @@
+"""keys pressed for real with xdotool: default and custom keybindings, clipboard, selection, shell input"""
+
+import time
+
+import pytest
+
+from harness import App, bundled_theme, close_to, get_clipboard, near, set_clipboard, xdo
+
+FEATURE = "keyboard, keybindings and clipboard"
+
+DARK = bundled_theme(True)
+
+
+def keyed(app_factory, keybindings=None, **settings) -> App:
+    return app_factory({"theme": {"mode": "dark"}, "window_title": ["number"], **settings}, keybindings=keybindings)
+
+
+def test_new_and_close_tab_keys(app_factory):
+    """ctrl-shift-t opens a tab, ctrl-shift-w closes the active one and activates the left one"""
+    app = keyed(app_factory)
+    app.key("ctrl+shift+t")
+    app.wait_title("2")
+    app.key("ctrl+shift+t")
+    app.wait_title("3")
+    app.snap("three tabs")
+    app.key("alt+2")
+    app.wait_title("2")
+    app.key("ctrl+shift+w")
+    app.wait_title("1")
+
+
+def test_close_last_tab_quits(app_factory):
+    """closing the last tab exits the app"""
+    app = keyed(app_factory)
+    app.snap("one tab left")
+    app.key("ctrl+shift+w")
+    app.wait(lambda: not app.alive(), msg="app exit")
+    assert app.proc.returncode == 0
+
+
+def test_exiting_shell_closes_its_tab(app_factory):
+    """a shell that exits closes its tab"""
+    app = keyed(app_factory)
+    app.key("ctrl+shift+t")
+    app.wait_title("2")
+    app.run("exit")
+    app.wait_title("1")
+
+
+def test_next_tab_wraps(app_factory):
+    """ctrl-tab goes to the tab on the right, from the last back to the first"""
+    app = keyed(app_factory)
+    for n in (2, 3):
+        app.key("ctrl+shift+t")
+        app.wait_title(str(n))
+    app.key("ctrl+Tab")
+    app.wait_title("1")
+    app.key("ctrl+Tab")
+    app.wait_title("2")
+
+
+def test_alt_number_activates_tab(app_factory):
+    """alt-n jumps to tab n, numbers past the last tab do nothing"""
+    app = keyed(app_factory)
+    for n in (2, 3):
+        app.key("ctrl+shift+t")
+        app.wait_title(str(n))
+    app.key("alt+1")
+    app.wait_title("1")
+    app.key("alt+3")
+    app.wait_title("3")
+    app.key("alt+7")
+    time.sleep(1.5)
+    assert app.title() == "3"
+
+
+def test_plain_ctrl_keys_reach_the_shell(app_factory):
+    """ctrl-t and ctrl-w are not bound, the shell gets them"""
+    app = keyed(app_factory)
+    app.type("echo one two")
+    app.key("ctrl+w")
+    app.type(f"> {app.file('out')}")
+    app.key("Return")
+    app.wait_file("out", "one")
+    assert app.title() == "1"
+
+
+def test_special_keys_edit_command_line(app_factory):
+    """arrows, home, end, backspace and delete edit the command line"""
+    app = keyed(app_factory)
+    app.type("echo bc")
+    app.key("Home", "Right", "Right", "Right", "Right", "Right")
+    app.type("a")
+    app.key("End", "BackSpace")
+    app.type(f"X > {app.file('out')}")
+    app.key("Return")
+    app.wait_file("out", "abX")
+
+
+def test_paste_key(app_factory):
+    """ctrl-shift-v pastes the clipboard, several lines too"""
+    app = keyed(app_factory)
+    set_clipboard(f"echo pasted > {app.file('one')}\necho second > {app.file('two')}\n")
+    app.key("ctrl+shift+v")
+    # bash turns on bracketed paste, so the pasted lines wait for enter
+    app.key("Return")
+    app.wait_file("one", "pasted")
+    app.wait_file("two", "second")
+
+
+@pytest.mark.parametrize("bracketed", [True, False], ids=["bracketed", "plain"])
+def test_paste_is_bracketed_only_when_asked(app_factory, bracketed):
+    """pasted text is wrapped in bracketed paste marks only when the program turned it on"""
+    mode = "\\033[?2004h" if bracketed else "\\033[?2004l"
+    app = app_factory({"theme": {"mode": "dark"}},
+                      script=f"printf '{mode}'; stty raw -echo; head -c 20 > \"$T2_TMP/got\"")
+    set_clipboard("hi")
+    time.sleep(0.5)
+    app.key("ctrl+shift+v")
+    app.type("x" * 20)
+    got = app.wait_file("got")
+    assert ("\x1b[200~hi\x1b[201~" in got) == bracketed, repr(got)
+    assert "hi" in got
+
+
+def test_mouse_selection_and_copy(app_factory):
+    """dragging selects text in the selection color, ctrl-shift-c copies it"""
+    app = keyed(app_factory)
+    app.run("clear; echo SELECTME-please")
+    app.wait(lambda: near(app.shot()[: app.line_height() * 3], DARK["terminal_foreground"], 30).any(), msg="text")
+    time.sleep(0.5)
+    x0, y0, _, y1 = app.cell_rect(0, 0)
+    _, _, x1, _ = app.cell_rect(7, 0)
+    app.drag((x0 + 1, (y0 + y1) // 2), (x1 - 1, (y0 + y1) // 2))
+    app.wait(lambda: close_to(app.cells_color(2, 0, 1), DARK["selection"], 12) or
+             near(app.shot()[y0:y1, x0:x1], DARK["selection"], 3).mean() > 0.3, msg="selection painted")
+    app.snap("text selected with the mouse")
+    app.key("ctrl+shift+c")
+    app.wait(lambda: get_clipboard() == "SELECTME", msg=f"clipboard, got {get_clipboard()!r}")
+
+
+def test_double_click_selects_word(app_factory):
+    """a double click selects the word under the pointer"""
+    app = keyed(app_factory)
+    app.run("clear; echo alpha bravo charlie")
+    time.sleep(1)
+    x0, y0, x1, y1 = app.cell_rect(8, 0)
+    app.focus()
+    app.mouse((x0 + x1) // 2, (y0 + y1) // 2)
+    xdo("click", "--repeat", "2", "--delay", "80", "1")
+    app.key("ctrl+shift+c")
+    app.wait(lambda: get_clipboard() == "bravo", msg=f"clipboard, got {get_clipboard()!r}")
+
+
+@pytest.mark.parametrize("action,keys", [("new_tab", "ctrl+shift+t"), ("next_tab", "ctrl+Tab"),
+                                         ("activate_tab_1", "alt+1")])
+def test_null_disables_action(app_factory, action, keys):
+    """null in keybindings.jsonc disables an action and its key"""
+    keys_file = {action: None} if action == "new_tab" else {action: None, "new_tab": "ctrl-shift-t"}
+    app = keyed(app_factory, keybindings=keys_file)
+    if action != "new_tab":
+        app.key("ctrl+shift+t")
+        app.wait_title("2")
+    before = app.title()
+    app.key(keys)
+    time.sleep(1.5)
+    assert app.title() == before
+
+
+def test_override_moves_action_to_new_key(app_factory):
+    """an action bound to another key works there, the old key does nothing"""
+    app = keyed(app_factory, keybindings={"new_tab": "ctrl-alt-n"})
+    app.key("ctrl+shift+t")
+    time.sleep(1.5)
+    assert app.title() == "1"
+    app.key("ctrl+alt+n")
+    app.wait_title("2")
+
+
+def test_key_sequence_binding(app_factory):
+    """keys separated by spaces are pressed one after another"""
+    app = keyed(app_factory, keybindings={"new_tab": "ctrl-a t"})
+    app.key("ctrl+a", "t")
+    app.wait_title("2")
+
+
+def test_activate_tab_above_nine(app_factory):
+    """activate_tab_<n> can go past 9"""
+    app = keyed(app_factory, keybindings={"activate_tab_10": "alt-0"})
+    for n in range(2, 11):
+        app.key("ctrl+shift+t")
+        app.wait_title(str(n))
+    app.key("alt+1")
+    app.wait_title("1")
+    app.key("alt+0")
+    app.wait_title("10")
+
+
+@pytest.mark.parametrize("content", ["{", "[]", '{"new_tab": 5}'])
+def test_invalid_keybindings_use_defaults(app_factory, content):
+    """a broken keybindings file prints an error and keeps the default keys"""
+    app = keyed(app_factory, keybindings=content)
+    app.key("ctrl+shift+t")
+    app.wait_title("2")
+    assert "invalid keybindings" in app.output()
+
+
+def test_wheel_scrolls_history_and_typing_jumps_back(app_factory):
+    """the wheel scrolls into history, typing goes back to the prompt"""
+    app = keyed(app_factory)
+    app.run("clear; for i in $(seq 1 200); do echo line $i; done")
+    time.sleep(1)
+    bottom = app.shot()
+    app.wheel(450, 300, up=True, clicks=10)
+    app.wait(lambda: (app.shot() != bottom).any(), msg="scrolled view")
+    time.sleep(0.5)
+    app.snap("scrolled up with the wheel")
+    app.type("x")
+    app.wait(lambda: (app.shot()[: -app.line_height() * 2] == bottom[: -app.line_height() * 2]).mean() > 0.95,
+             msg="back at the prompt")

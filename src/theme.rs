@@ -5,9 +5,8 @@ use std::path::{Path, PathBuf};
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
 use gpui::{App, Global, Hsla, WindowAppearance, rgb};
 use serde::Deserialize;
-use serde_json_lenient::Value;
 
-use crate::settings::{Settings, ThemeMode, ThemeSettings, create_default_file, merge};
+use crate::settings::{Settings, ThemeMode, ThemeSettings, create_default_file, parse_over};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Theme {
@@ -20,6 +19,9 @@ pub struct Theme {
     pub terminal_foreground: Hsla,
     pub cursor: Hsla,
     pub selection: Hsla,
+    pub scrollbar: Hsla,
+    pub danger_button: Hsla,
+    pub danger_button_text: Hsla,
     /// 8 normal colors followed by 8 bright colors
     pub ansi: [Hsla; 16],
     pub ansi_dim: [Hsla; 8],
@@ -56,13 +58,11 @@ impl Theme {
 
     /// parse theme, missing colors come from the bundled theme of the same mode
     pub fn parse(json: &str, dark: bool) -> serde_json_lenient::Result<Self> {
-        let mut theme: Value = serde_json_lenient::from_str(Self::bundled_json(dark))?;
-        merge(&mut theme, serde_json_lenient::from_str(json)?);
-        serde_json_lenient::from_value(theme)
+        parse_over(Self::bundled_json(dark), json)
     }
 
     // relative paths start from the folder with settings.jsonc
-    fn resolve(path: &Path) -> PathBuf {
+    pub(crate) fn resolve(path: &Path) -> PathBuf {
         Settings::path()
             .and_then(|settings| settings.parent().map(|dir| dir.join(path)))
             .unwrap_or_else(|| path.to_path_buf())
@@ -100,7 +100,11 @@ impl Theme {
 
     /// set active theme from settings mode and system appearance
     pub fn apply(appearance: WindowAppearance, cx: &mut App) {
-        let settings = &Settings::get(cx).theme;
+        cx.set_global(Self::for_appearance(&Settings::get(cx).theme, appearance));
+    }
+
+    /// theme picked by settings mode and system appearance
+    pub fn for_appearance(settings: &ThemeSettings, appearance: WindowAppearance) -> Self {
         let dark = match settings.mode {
             ThemeMode::System => {
                 matches!(
@@ -111,7 +115,7 @@ impl Theme {
             ThemeMode::Dark => true,
             ThemeMode::Light => false,
         };
-        cx.set_global(Self::load(settings, dark));
+        Self::load(settings, dark)
     }
 
     /// active theme
@@ -163,6 +167,7 @@ fn rgba_color(r: u8, g: u8, b: u8) -> Hsla {
 #[cfg(test)]
 mod tests {
     use gpui::Rgba;
+    use serde_json_lenient::Value;
 
     use super::*;
 

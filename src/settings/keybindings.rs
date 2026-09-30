@@ -4,12 +4,12 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use gpui::{KeyBinding, Keystroke};
 use serde::de::Error;
-use serde_json_lenient::Value;
 
-use super::{Settings, create_default_file, merge};
+use super::{config_dir, load_file, parse_over};
+use crate::cli::Cli;
 use crate::ui::{
     terminal_view::{Copy, Paste},
-    workspace::{ActivateTab, CloseTab, NewTab, NextTab},
+    workspace::{ActivateTab, CloseTab, NewTab, NextTab, ToggleCommandPalette},
 };
 
 /// action name to its keys, `None` when the action is disabled
@@ -33,6 +33,7 @@ fn binding(action: &str, keys: &str) -> Option<KeyBinding> {
         "next_tab" => KeyBinding::new(keys, NextTab, None),
         "copy" => KeyBinding::new(keys, Copy, Some("Terminal")),
         "paste" => KeyBinding::new(keys, Paste, Some("Terminal")),
+        "command_palette" => KeyBinding::new(keys, ToggleCommandPalette, None),
         _ => {
             let number: usize = action.strip_prefix("activate_tab_")?.parse().ok()?;
             KeyBinding::new(keys, ActivateTab(number.checked_sub(1)?), None)
@@ -41,16 +42,17 @@ fn binding(action: &str, keys: &str) -> Option<KeyBinding> {
 }
 
 impl Keybindings {
-    /// `keybindings.jsonc` in the same folder as `settings.jsonc`
+    /// `--keybindings-file`, or `keybindings.jsonc` in the config dir
     pub fn path() -> Option<PathBuf> {
-        Some(Settings::path()?.with_file_name("keybindings.jsonc"))
+        Cli::get()
+            .keybindings_file
+            .clone()
+            .or_else(|| Some(config_dir()?.join("keybindings.jsonc")))
     }
 
     /// parse keybindings over the bundled ones, rejecting unknown actions and bad keys
     pub fn parse(json: &str) -> serde_json_lenient::Result<Self> {
-        let mut bindings: Value = serde_json_lenient::from_str(DEFAULT_KEYBINDINGS)?;
-        merge(&mut bindings, serde_json_lenient::from_str(json)?);
-        let bindings: BTreeMap<String, Option<String>> = serde_json_lenient::from_value(bindings)?;
+        let bindings: BTreeMap<String, Option<String>> = parse_over(DEFAULT_KEYBINDINGS, json)?;
         for (action, keys) in &bindings {
             let Some(keys) = keys else { continue };
             if keys.trim().is_empty() {
@@ -71,17 +73,12 @@ impl Keybindings {
 
     /// load keybindings from the keybindings file, using defaults when it is missing or invalid
     pub fn load() -> Self {
-        let Some(path) = Self::path() else {
-            return Self::default();
-        };
-        create_default_file(&path, DEFAULT_KEYBINDINGS);
-        let Ok(json) = std::fs::read_to_string(&path) else {
-            return Self::default();
-        };
-        Self::parse(&json).unwrap_or_else(|error| {
-            eprintln!("invalid keybindings in {}: {error}", path.display());
-            Self::default()
-        })
+        load_file(
+            Self::path(),
+            DEFAULT_KEYBINDINGS,
+            "keybindings",
+            Self::parse,
+        )
     }
 
     /// gpui bindings for every enabled action
@@ -106,7 +103,7 @@ mod tests {
         assert_eq!(keys.0["next_tab"].as_deref(), Some("ctrl-tab"));
         assert_eq!(keys.0["copy"].as_deref(), Some("ctrl-shift-c"));
         assert_eq!(keys.0["activate_tab_9"].as_deref(), Some("alt-9"));
-        assert_eq!(keys.bindings().len(), 14);
+        assert_eq!(keys.bindings().len(), 15);
     }
 
     #[test]
@@ -136,7 +133,7 @@ mod tests {
         assert_eq!(keys.0["new_tab"].as_deref(), Some("ctrl-shift-n"));
         assert_eq!(keys.0["close_tab"], None);
         assert_eq!(keys.0["paste"].as_deref(), Some("ctrl-shift-v"));
-        assert_eq!(keys.bindings().len(), 14);
+        assert_eq!(keys.bindings().len(), 15);
     }
 
     #[test]
@@ -187,7 +184,7 @@ mod tests {
     fn activate_tab_10_adds_a_binding_for_index_9() {
         let keys = Keybindings::parse(r#"{"activate_tab_10": "alt-0"}"#).unwrap();
         let bindings = keys.bindings();
-        assert_eq!(bindings.len(), 15);
+        assert_eq!(bindings.len(), 16);
         let strokes = |ix: usize| -> Vec<Keystroke> {
             let found: Vec<_> = bindings
                 .iter()
@@ -213,6 +210,7 @@ mod tests {
             "next_tab",
             "copy",
             "paste",
+            "command_palette",
             "activate_tab_1",
         ] {
             let line = DEFAULT_KEYBINDINGS

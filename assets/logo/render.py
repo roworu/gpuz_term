@@ -12,6 +12,7 @@ FACES = {
     "right": (8.66, -5, 0, 10, 128, 128),
 }
 
+SCALE = 1.2
 
 def render_png(size: int) -> Image.Image:
 
@@ -19,6 +20,8 @@ def render_png(size: int) -> Image.Image:
     out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     for name, (a, b, c, d, e, f) in FACES.items():
         tex = Image.open(HERE / "textures" / f"{name}.png").convert("RGBA")
+        e, f = 128 + (e - 128) * SCALE, 128 + (f - 128) * SCALE
+        a, b, c, d = a * SCALE, b * SCALE, c * SCALE, d * SCALE
         a, b, c, d, e, f = a * k, b * k, c * k, d * k, e * k, f * k
         det = a * d - b * c
         inv = (d / det, -c / det, (c * f - d * e) / det, -b / det, a / det, (b * e - a * f) / det)

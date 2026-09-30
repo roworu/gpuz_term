@@ -1,13 +1,16 @@
 //! focusable view around terminal
 
+use std::time::{Duration, Instant};
+
 use alacritty_terminal::selection::SelectionType;
 use gpui::{
     App, ClipboardItem, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
     KeyDownEvent, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, Styled, Subscription, Window, actions, div, px,
+    ScrollWheelEvent, Styled, Subscription, Task, Window, actions, div, px,
 };
 
 use crate::{
+    settings::{Settings, SmoothScrollSettings},
     terminal::{Event, Terminal},
     ui::terminal_element::TerminalElement,
 };
@@ -17,12 +20,39 @@ actions!(terminal, [Copy, Paste]);
 // default terminal scroll_multiplier
 const SCROLL_MULTIPLIER: f32 = 2.;
 
+/// glide of the viewport between two history offsets
+#[derive(Clone, Copy, Debug)]
+struct ScrollAnimation {
+    from: f32,
+    to: f32,
+    started: Instant,
+}
+
+impl ScrollAnimation {
+    /// offset right now and whether the glide is over
+    fn position(&self, smooth: &SmoothScrollSettings) -> (f32, bool) {
+        let t = (self.started.elapsed().as_secs_f32() * 1000. / smooth.duration).min(1.);
+        let offset = self.from + (self.to - self.from) * smooth.easing.apply(t);
+        (offset, t >= 1.)
+    }
+}
+
 pub struct TerminalView {
     terminal: Entity<Terminal>,
     focus_handle: FocusHandle,
     scroll_px: Pixels,
     /// left button went down inside the terminal and is still held
     selecting: bool,
+    /// left button went down on the scrollbar and is still held
+    dragging_scrollbar: bool,
+    /// drives scrollbar auto hide
+    last_scroll: Option<Instant>,
+    /// history seen on the last wakeup, growth means output scrolled the view
+    history_size: usize,
+    /// running smooth scroll, advanced on every frame
+    scroll_animation: Option<ScrollAnimation>,
+    /// repaints once the scrollbar should hide, replacing it cancels the old timer
+    _hide_scrollbar: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -31,8 +61,14 @@ impl TerminalView {
     pub fn new(terminal: Entity<Terminal>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
-            cx.subscribe(&terminal, |_, _, event: &Event, cx| {
+            cx.subscribe(&terminal, |this, _, event: &Event, cx| {
                 if *event == Event::Wakeup {
+                    // output pushing lines into history scrolls the view too
+                    let history_size = this.terminal.read(cx).history_size();
+                    if history_size > this.history_size {
+                        this.show_scrollbar(cx);
+                    }
+                    this.history_size = history_size;
                     cx.notify();
                 }
             }),
@@ -50,6 +86,11 @@ impl TerminalView {
             focus_handle,
             scroll_px: px(0.),
             selecting: false,
+            dragging_scrollbar: false,
+            last_scroll: None,
+            history_size: 0,
+            scroll_animation: None,
+            _hide_scrollbar: Task::ready(()),
             _subscriptions: subscriptions,
         }
     }
@@ -62,6 +103,7 @@ impl TerminalView {
     /// send committed text from  input handler to pty
     pub fn commit_text(&mut self, text: &str, cx: &mut Context<Self>) {
         if !text.is_empty() {
+            self.scroll_animation = None;
             self.terminal
                 .update(cx, |term, _| term.input(text.to_string().into_bytes()));
         }
@@ -76,6 +118,8 @@ impl TerminalView {
             .terminal
             .update(cx, |term, _| term.try_keystroke(&event.keystroke))
         {
+            // input jumps to the bottom, a running glide would pull the view back up
+            self.scroll_animation = None;
             cx.stop_propagation();
         }
     }
@@ -98,7 +142,74 @@ impl TerminalView {
             }
         };
         if lines != 0 {
-            self.terminal.update(cx, |term, _| term.scroll(lines));
+            if Settings::get(cx).terminal.smooth_scroll.active() {
+                let terminal = self.terminal.read(cx);
+                // keep adding to the target, so fast wheel spins are not lost mid glide
+                let current = self
+                    .scroll_animation
+                    .map_or(terminal.last_content.display_offset as f32, |a| a.to);
+                let target = (current + lines as f32).clamp(0., terminal.history_size() as f32);
+                self.animate_scroll(target, cx);
+            } else {
+                self.terminal.update(cx, |term, _| term.scroll(lines));
+            }
+            self.show_scrollbar(cx);
+            cx.notify();
+        }
+    }
+
+    // starts from where a running glide is now, so retargeting never jumps
+    fn animate_scroll(&mut self, target: f32, cx: &mut Context<Self>) {
+        let smooth = Settings::get(cx).terminal.smooth_scroll;
+        let from = self.scroll_animation.map_or_else(
+            || self.terminal.read(cx).last_content.display_offset as f32,
+            |animation| animation.position(&smooth).0,
+        );
+        self.scroll_animation = Some(ScrollAnimation {
+            from,
+            to: target,
+            started: Instant::now(),
+        });
+    }
+
+    fn show_scrollbar(&mut self, cx: &mut Context<Self>) {
+        self.last_scroll = Some(Instant::now());
+        let auto_hide = Settings::get(cx).terminal.scrollbar.auto_hide;
+        if auto_hide == 0. {
+            return;
+        }
+        let delay = Duration::from_secs_f32(auto_hide);
+        self._hide_scrollbar = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            this.update(cx, |_, cx| cx.notify()).ok();
+        });
+    }
+
+    /// false once auto hide kicked in
+    pub(crate) fn scrollbar_visible(&self, cx: &App) -> bool {
+        let auto_hide = Settings::get(cx).terminal.scrollbar.auto_hide;
+        auto_hide == 0.
+            || self.dragging_scrollbar
+            || self
+                .last_scroll
+                .is_some_and(|at| at.elapsed() < Duration::from_secs_f32(auto_hide))
+    }
+
+    /// click on the scrollbar jumps there and starts a drag
+    pub fn scrollbar_down(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.dragging_scrollbar = true;
+        self.scrollbar_drag(offset, cx);
+    }
+
+    /// move the viewport with the thumb while the button is held
+    pub fn scrollbar_drag(&mut self, offset: usize, cx: &mut Context<Self>) {
+        if self.dragging_scrollbar {
+            if Settings::get(cx).terminal.smooth_scroll.active() {
+                self.animate_scroll(offset as f32, cx);
+            } else {
+                self.terminal.update(cx, |term, _| term.scroll_to(offset));
+            }
+            self.show_scrollbar(cx);
             cx.notify();
         }
     }
@@ -131,8 +242,9 @@ impl TerminalView {
     }
 
     /// finish the drag, the selection stays until the next click or input
-    pub fn mouse_up(&mut self, _: &mut Context<Self>) {
+    pub fn mouse_up(&mut self) {
         self.selecting = false;
+        self.dragging_scrollbar = false;
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
@@ -143,6 +255,7 @@ impl TerminalView {
 
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            self.scroll_animation = None;
             self.terminal.update(cx, |term, _| term.paste(&text));
         }
     }
@@ -157,6 +270,17 @@ impl Focusable for TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window) && window.is_window_active();
+        if let Some(animation) = self.scroll_animation {
+            let smooth = Settings::get(cx).terminal.smooth_scroll;
+            let (offset, done) = animation.position(&smooth);
+            self.terminal
+                .update(cx, |term, _| term.scroll_to(offset.round() as usize));
+            if done {
+                self.scroll_animation = None;
+            } else {
+                window.request_animation_frame();
+            }
+        }
         div()
             .id("terminal-view")
             .size_full()
@@ -171,6 +295,7 @@ impl Render for TerminalView {
                 cx.entity(),
                 self.focus_handle.clone(),
                 focused,
+                self.scrollbar_visible(cx),
             ))
     }
 }

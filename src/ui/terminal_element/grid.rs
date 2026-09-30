@@ -45,7 +45,7 @@ impl BatchedTextRun {
     }
 
     pub(super) fn paint(
-        &self,
+        &mut self,
         origin: Point<Pixels>,
         dims: &TerminalBounds,
         font_size: Pixels,
@@ -60,7 +60,7 @@ impl BatchedTextRun {
         window
             .text_system()
             .shape_line(
-                self.text.clone().into(),
+                std::mem::take(&mut self.text).into(),
                 font_size,
                 std::slice::from_ref(&self.style),
                 Some(dims.cell_width),

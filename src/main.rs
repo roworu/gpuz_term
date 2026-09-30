@@ -1,3 +1,4 @@
+mod cli;
 mod settings;
 mod terminal;
 mod theme;
@@ -9,13 +10,17 @@ use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions
 use gpui_platform::application;
 
 use crate::{
-    settings::{Keybindings, Settings},
+    cli::{Cli, USAGE},
+    settings::{Commands, Keybindings, Pins, Settings, TabIcons},
     theme::Theme,
-    ui::workspace::Workspace,
+    ui::{text_input, workspace::Workspace},
 };
 
+/// bundled regular face, also used to measure tab icons
+pub(crate) const FONT_REGULAR: &[u8] =
+    include_bytes!("../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-Regular.ttf");
+
 fn init(cx: &mut App) {
-    // 1) bundle jetbrains mono nerd font as binary
     let fonts: Vec<Cow<'static, [u8]>> = vec![
         Cow::Borrowed(include_bytes!(
             "../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-Bold.ttf"
@@ -26,25 +31,40 @@ fn init(cx: &mut App) {
         Cow::Borrowed(include_bytes!(
             "../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-Italic.ttf"
         )),
-        Cow::Borrowed(include_bytes!(
-            "../assets/fonts/jetbrains/JetBrainsMonoNLNerdFontMono-Regular.ttf"
-        )),
+        Cow::Borrowed(FONT_REGULAR),
     ];
     cx.text_system()
         .add_fonts(fonts)
         .expect("failed to load bundled fonts");
 
-    // 2) load settings
-    cx.set_global(Settings::load());
-
-    // 3) apply theme
+    let cli = Cli::get();
+    if cli.recreate_confs {
+        cli.remove_configs();
+    }
+    let mut settings = Settings::load();
+    cli.apply(&mut settings);
+    settings.use_installed_fonts(&cx.text_system().all_font_names());
+    cx.set_global(settings);
+    cx.set_global(TabIcons::load());
+    cx.set_global(Commands::load());
+    cx.set_global(Pins::load());
     Theme::apply(cx.window_appearance(), cx);
-
-    // 4) load keybindings
     cx.bind_keys(Keybindings::load().bindings());
+    cx.bind_keys(text_input::bindings());
 }
 
 fn main() {
+    match Cli::parse(std::env::args_os().skip(1)) {
+        Ok(cli) if cli.help => {
+            println!("{USAGE}");
+            return;
+        }
+        Ok(cli) => cli.init(),
+        Err(error) => {
+            eprintln!("{error}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    }
     application().run(|cx: &mut App| {
         init(cx);
         cx.on_window_closed(|cx, _| cx.quit()).detach();

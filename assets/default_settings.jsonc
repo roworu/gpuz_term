@@ -9,13 +9,13 @@
   "ui_font_family": "JetBrainsMonoNL Nerd Font Mono",
   // ui font size in pixels, the whole ui scales with it
   // font sizes go from 6 to 72
-  "ui_font_size": 16,
+  "ui_font_size": 18,
   // hide the tab bar while only one tab is open, ctrl-t still opens new tabs
   "hide_bar_for_one_tab": true,
   // stretch tabs to fill the whole tab bar, sharing its width equally
   "expand_tabs": false,
   // tab width in pixels when "expand_tabs" is false, wheel scrolls tabs that don't fit
-  "tab_width": 180,
+  "tab_width": 220,
   // tab title, built from these blocks in order:
   //   "number"                                 - tab position, starting at 1
   //   "prompt"                                 - user@host
@@ -30,12 +30,40 @@
   "tab_title": ["folder", { "text": " - " }, "command"],
   // where the title sits inside its tab: "left", "center" or "right"
   "tab_title_align": "left",
+  // icon shown in each tab
+  "tab_icon": {
+    // side of the tab it sits on: "left" or "right"
+    "position": "left",
+    // follow running program, like ssh or htop. false always shows "default"
+    "dynamic": true,
+    // icon of the shell and of programs without own icon
+    "default": "",
+  },
+  // show the "×" close button on the active tab and on hovered ones, middle click still closes tabs
+  "show_tab_close_button": true,
+  // ask before closing a tab while a program still runs in it, like vim or a long build
+  "close_running_tab_warn": true,
   // where the "+" new tab button sits: "left" or "right" end of the tab bar, or "after_tabs" next to the last tab
   "new_tab_button": "after_tabs",
   // window title, built from the active tab with the same blocks as "tab_title"
   "window_title": ["folder", { "text": " - " }, "command"],
   // used by "title" when the running program set none, and as window title when it is empty
   "default_title": "kuterm",
+
+  "command_palette": {
+    // allow opening the command palette with its key, commands are set in commands.jsonc
+    "enable": true,
+    // list recently run commands first, right after pinned ones
+    "show_recent": true,
+  },
+
+  "notifications": {
+    // show notifications inside the window, like when a command from the palette finishes
+    "enable": true,
+    // seconds a notification stays, 0 keeps it until clicked
+    // timeout goes from 0 to 3600
+    "timeout": 5,
+  },
 
   "theme": {
     // which theme to use, applied right away when the system switches:
@@ -52,16 +80,11 @@
   },
 
   "terminal": {
-    // shell to launch in new tabs:
-    //   "system"                                                   - login shell of current user
-    //   { "program": "zsh" }                                       - specific program
-    //   { "with_arguments": { "program": "bash", "args": ["--login"] } } - program with arguments
-    "shell": "system",
     // terminal font, bundled "JetBrainsMonoNL Nerd Font Mono" is always available
     "font_family": "JetBrainsMonoNL Nerd Font Mono",
     // terminal font size in pixels
     // font sizes go from 6 to 72
-    "font_size": 16,
+    "font_size": 18,
     // line height as a multiple of font size:
     //   "standard"          - 1.3
     //   "comfortable"       - 1.618
@@ -69,5 +92,57 @@
     "line_height": "standard",
     // cursor shape: "block", "bar", "underline" or "hollow"
     "cursor_shape": "bar",
+    // lines of scrollback history to keep, 0 keeps everything
+    "max_history_length": 10000,
+    "scrollbar": {
+      // when to show it:
+      //   "on"      - always
+      //   "off"     - never
+      //   "dynamic" - only when there is history to scroll
+      "enable": "dynamic",
+      // side of the terminal it sits on: "left" or "right"
+      "placement": "right",
+      // width in pixels, from 2 to 64
+      "width": 8,
+      // hide after this many seconds without scrolling. 0 never hides.
+      "auto_hide": 10,
+    },
+    // glide to the new position smoothly instead of jumping
+    "smooth_scroll": {
+      "enable": true,
+      // how long one glide takes in milliseconds, from 0 to 1000
+      "duration": 300,
+      // speed curve of the glide:
+      //   "linear"      - same speed all the way
+      //   "ease_out"    - fast start, soft stop
+      //   "ease_in_out" - soft start and soft stop
+      "easing": "ease_out",
+    },
   },
+
+  // what new tabs start with. ctrl-shift-t and a click on "+" open the default profile,
+  // a right click on "+" picks any profile when there is more than one.
+  // "name" and "command" are required, the other keys can be left out.
+  "profiles": [
+    {
+      // shown in the profile menu
+      "name": "default",
+      // only one profile can be default, the first one is used when none is
+      "default": true,
+      // program to launch:
+      //   "system"                                                   - login shell of current user
+      //   { "program": "zsh" }                                       - specific program
+      //   { "with_arguments": { "program": "bash", "args": ["--login"] } } - program with arguments
+      "command": "system",
+      // folder to start in, "~" is the home folder, null uses the folder kuterm started in
+      "working_directory": null,
+      // color scheme, same keys as "theme" above, like { "mode": "dark", "dark": "themes/red.jsonc" }.
+      // null uses "theme"
+      "theme": null,
+      // tab icon, kept whatever runs in the tab. null uses "tab_icon"
+      "icon": null,
+      // extra environment variables, like { "EDITOR": "vim" }
+      "env": {},
+    },
+  ],
 }

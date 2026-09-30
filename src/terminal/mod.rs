@@ -20,19 +20,23 @@ use alacritty_terminal::{
     Term,
     event::Notify,
     event_loop::{Msg, Notifier},
-    grid::Scroll,
+    grid::{Dimensions, Scroll},
     sync::FairMutex,
     term::TermMode,
 };
-use gpui::{EventEmitter, Keystroke, Task};
+use gpui::{App, EventEmitter, Keystroke, Task, WindowAppearance};
 
 pub use bounds::TerminalBounds;
 pub use builder::TerminalBuilder;
 pub use content::{Content, IndexedCell};
-pub use process::foreground_process;
+#[cfg(test)]
+pub(crate) use process::tests::{Kill, spawn};
+pub use process::{ForegroundProcess, children, foreground_process, process_info};
 
 use builder::ZedListener;
 use keys::to_esc_str;
+
+use crate::{settings::ThemeSettings, theme::Theme};
 
 /// events emitted to terminal view
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +61,9 @@ pub struct Terminal {
     title: String,
     /// pid of the shell running in the pty
     pub shell_pid: u32,
+    /// color scheme from the profile, global theme when none
+    theme_settings: Option<ThemeSettings>,
+    theme: Option<Theme>,
     _event_loop_task: Task<()>,
 }
 
@@ -69,6 +76,19 @@ impl Terminal {
         } else {
             self.title.clone()
         }
+    }
+
+    /// profile theme when it has one, otherwise the global theme
+    pub fn theme<'a>(&'a self, cx: &'a App) -> &'a Theme {
+        self.theme.as_ref().unwrap_or_else(|| Theme::get(cx))
+    }
+
+    /// load the profile theme for this system appearance
+    pub fn apply_theme(&mut self, appearance: WindowAppearance) {
+        self.theme = self
+            .theme_settings
+            .as_ref()
+            .map(|settings| Theme::for_appearance(settings, appearance));
     }
 
     fn write_to_pty(&self, input: impl Into<Cow<'static, [u8]>>) {
@@ -97,6 +117,20 @@ impl Terminal {
 
     /// scroll the viewport by lines, positive is up into history
     pub fn scroll(&mut self, lines: i32) {
+        self.events
+            .push(InternalEvent::Scroll(Scroll::Delta(lines)));
+    }
+
+    /// lines scrolled out above the screen right now, without waiting for `sync`
+    pub fn history_size(&self) -> usize {
+        self.term.lock_unfair().grid().history_size()
+    }
+
+    /// show history `offset` lines above the bottom
+    pub fn scroll_to(&mut self, offset: usize) {
+        // alacritty only scrolls relative, so start from a known position
+        self.events.push(InternalEvent::Scroll(Scroll::Bottom));
+        let lines = offset.min(i32::MAX as usize) as i32;
         self.events
             .push(InternalEvent::Scroll(Scroll::Delta(lines)));
     }
@@ -131,12 +165,10 @@ impl Terminal {
     /// apply queued events and refresh the grid snapshot if anything changed
     pub fn sync(&mut self) {
         // many frames are repaints for focus or tab changes, skip the copy for those
-        let dirty = self.dirty.swap(false, Ordering::Acquire);
-        if !dirty && self.events.is_empty() {
+        if !self.dirty.swap(false, Ordering::Acquire) && self.events.is_empty() {
             return;
         }
-        let term = self.term.clone();
-        let mut term = term.lock_unfair();
+        let mut term = self.term.lock_unfair();
         for event in self.events.drain(..) {
             match event {
                 InternalEvent::Resize(bounds) => {
@@ -160,19 +192,30 @@ impl Drop for Terminal {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use gpui::point;
-
     use alacritty_terminal::event::Event as AlacTermEvent;
     use futures::{FutureExt, StreamExt};
-    use gpui::{Bounds, px, size};
+    use gpui::{Bounds, point, px, size};
 
     use super::{
         Terminal, TerminalBounds, TerminalBuilder, foreground_process, process::ForegroundProcess,
     };
-    use crate::settings::{CursorShape, Shell, TerminalSettings};
+    use crate::settings::{CursorShape, Profile, Settings, Shell, TerminalSettings};
 
     pub(super) fn spawn(settings: &TerminalSettings) -> TerminalBuilder {
-        let mut builder = TerminalBuilder::new(settings, 0).expect("failed to spawn shell");
+        spawn_with(settings, Settings::default().default_profile())
+    }
+
+    /// default profile running `command`
+    pub(super) fn profile(command: Shell) -> Profile {
+        Profile {
+            command,
+            ..Settings::default().default_profile().clone()
+        }
+    }
+
+    pub(super) fn spawn_with(settings: &TerminalSettings, profile: &Profile) -> TerminalBuilder {
+        let mut builder =
+            TerminalBuilder::new(settings, profile, 0).expect("failed to spawn shell");
         // 80x24 grid, a real window would size it in prepaint
         builder.terminal.set_size(TerminalBounds::new(
             px(20.),
@@ -233,15 +276,65 @@ mod tests {
 
     #[test]
     fn configured_shell_is_launched() {
-        let settings = TerminalSettings {
-            shell: Shell::WithArguments {
-                program: "/bin/sh".into(),
-                args: vec!["-c".into(), "echo from_settings_$((2+3)); sleep 5".into()],
-            },
-            ..TerminalSettings::default()
-        };
-        let mut builder = spawn(&settings);
+        let profile = profile(Shell::WithArguments {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "echo from_settings_$((2+3)); sleep 5".into()],
+        });
+        let mut builder = spawn_with(&TerminalSettings::default(), &profile);
         wait_for_text(&mut builder.terminal, "from_settings_5");
+    }
+
+    #[test]
+    fn profile_env_and_working_directory_reach_shell() {
+        let home = std::env::var("HOME").unwrap();
+        let mut profile = profile(Shell::WithArguments {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "echo \"env=$KUTERM_TEST:$TERM pwd=$(pwd)=\"; sleep 5".into(),
+            ],
+        });
+        profile.working_directory = Some("~".into());
+        profile
+            .env
+            .insert("KUTERM_TEST".into(), "from_profile".into());
+        // profile env overrides kuterm's own
+        profile.env.insert("TERM".into(), "dumb".into());
+        let mut builder = spawn_with(&TerminalSettings::default(), &profile);
+        wait_for_text(
+            &mut builder.terminal,
+            &format!("env=from_profile:dumb pwd={home}="),
+        );
+
+        profile.working_directory = Some("/tmp".into());
+        let mut builder = spawn_with(&TerminalSettings::default(), &profile);
+        wait_for_text(&mut builder.terminal, "pwd=/tmp=");
+    }
+
+    #[test]
+    fn profile_theme_follows_appearance() {
+        use gpui::WindowAppearance;
+
+        use crate::{
+            settings::{ThemeMode, ThemeSettings},
+            theme::Theme,
+        };
+
+        let mut builder = spawn(&TerminalSettings::default());
+        builder.terminal.apply_theme(WindowAppearance::Light);
+        assert_eq!(builder.terminal.theme, None);
+
+        let mut profile = profile(Shell::System);
+        profile.theme = Some(ThemeSettings {
+            mode: ThemeMode::System,
+            dark: None,
+            light: None,
+        });
+        let mut builder = spawn_with(&TerminalSettings::default(), &profile);
+        builder.terminal.apply_theme(WindowAppearance::Light);
+        assert_eq!(builder.terminal.theme, Some(Theme::bundled(false)));
+        builder.terminal.apply_theme(WindowAppearance::Dark);
+        assert_eq!(builder.terminal.theme, Some(Theme::bundled(true)));
     }
 
     #[test]
@@ -294,7 +387,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let process = foreground_process(builder.terminal.shell_pid);
-            if let Some(ForegroundProcess { name, cwd }) = &process
+            if let Some(ForegroundProcess { name, cwd, .. }) = &process
                 && name == "sleep"
             {
                 assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
@@ -308,16 +401,72 @@ mod tests {
         }
     }
 
+    /// terminal that prints 200 numbered lines, then waits
+    fn spawn_long_output(settings: &TerminalSettings) -> TerminalBuilder {
+        let profile = profile(Shell::WithArguments {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "read _; i=0; while [ $i -lt 200 ]; do echo line_$i; i=$((i+1)); done; echo long_done; sleep 5"
+                    .into(),
+            ],
+        });
+        let mut builder = spawn_with(settings, &profile);
+        // print only after the resize, growing the screen later pulls lines out of history
+        builder.terminal.input(b"\r".to_vec());
+        wait_for_text(&mut builder.terminal, "long_done");
+        builder
+    }
+
     #[test]
-    fn sync_skips_unchanged_grid_and_reuses_cell_buffer() {
+    fn max_history_length_limits_scrollback() {
         let settings = TerminalSettings {
-            shell: Shell::WithArguments {
-                program: "/bin/sh".into(),
-                args: vec!["-c".into(), "echo quiet_ready; sleep 5".into()],
-            },
+            max_history_length: 50,
             ..TerminalSettings::default()
         };
-        let mut builder = spawn(&settings);
+        let builder = spawn_long_output(&settings);
+        assert_eq!(builder.terminal.last_content.history_size, 50);
+
+        // 0 keeps everything
+        let settings = TerminalSettings {
+            max_history_length: 0,
+            ..TerminalSettings::default()
+        };
+        let builder = spawn_long_output(&settings);
+        assert!(builder.terminal.last_content.history_size >= 170);
+    }
+
+    #[test]
+    fn scroll_to_moves_to_absolute_offset() {
+        let mut builder = spawn_long_output(&TerminalSettings::default());
+        let terminal = &mut builder.terminal;
+        let history = terminal.last_content.history_size;
+
+        terminal.scroll_to(10);
+        terminal.sync();
+        assert_eq!(terminal.last_content.display_offset, 10);
+        // absolute, so repeating it does not scroll further
+        terminal.scroll_to(10);
+        terminal.sync();
+        assert_eq!(terminal.last_content.display_offset, 10);
+
+        terminal.scroll_to(usize::MAX);
+        terminal.sync();
+        assert_eq!(terminal.last_content.display_offset, history);
+        assert!(screen_text(terminal).contains("line_0"));
+
+        terminal.scroll_to(0);
+        terminal.sync();
+        assert_eq!(terminal.last_content.display_offset, 0);
+    }
+
+    #[test]
+    fn sync_skips_unchanged_grid_and_reuses_cell_buffer() {
+        let profile = profile(Shell::WithArguments {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "echo quiet_ready; sleep 5".into()],
+        });
+        let mut builder = spawn_with(&TerminalSettings::default(), &profile);
         let terminal = &mut builder.terminal;
         wait_for_text(terminal, "quiet_ready");
         // let the last wakeup land, nothing prints after that

@@ -1,18 +1,29 @@
 //! user settings, read from a jsonc file
 
+mod commands;
 mod keybindings;
 mod options;
+mod pins;
+mod tab_icons;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use gpui::{App, Global};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json_lenient::Value;
 
+pub use commands::{Command, CommandAction, Commands};
 pub use keybindings::Keybindings;
 pub use options::{
-    CursorShape, LineHeight, NewTabButton, Shell, TabTitleAlign, TabTitleBlock, ThemeMode,
+    CursorShape, LineHeight, NewTabButton, ScrollEasing, ScrollbarEnable, ScrollbarPlacement,
+    Shell, TabIconPosition, TabTitleAlign, TabTitleBlock, ThemeMode,
 };
+pub use pins::Pins;
+pub use tab_icons::TabIcons;
+
+use crate::cli::Cli;
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Settings {
@@ -23,11 +34,17 @@ pub struct Settings {
     pub tab_width: u32,
     pub tab_title: Vec<TabTitleBlock>,
     pub tab_title_align: TabTitleAlign,
+    pub tab_icon: TabIconSettings,
+    pub show_tab_close_button: bool,
+    pub close_running_tab_warn: bool,
     pub new_tab_button: NewTabButton,
     pub window_title: Vec<TabTitleBlock>,
     pub default_title: String,
     pub theme: ThemeSettings,
     pub terminal: TerminalSettings,
+    pub profiles: Vec<Profile>,
+    pub command_palette: CommandPaletteSettings,
+    pub notifications: NotificationSettings,
 }
 
 impl Default for Settings {
@@ -47,12 +64,58 @@ pub struct ThemeSettings {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct CommandPaletteSettings {
+    pub enable: bool,
+    pub show_recent: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct NotificationSettings {
+    pub enable: bool,
+    /// seconds a notification stays, 0 keeps it until clicked
+    pub timeout: f32,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct TabIconSettings {
+    pub position: TabIconPosition,
+    pub dynamic: bool,
+    pub default: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct TerminalSettings {
-    pub shell: Shell,
     pub font_family: String,
     pub font_size: f32,
     pub line_height: LineHeight,
     pub cursor_shape: CursorShape,
+    pub max_history_length: usize,
+    pub scrollbar: ScrollbarSettings,
+    pub smooth_scroll: SmoothScrollSettings,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct ScrollbarSettings {
+    pub enable: ScrollbarEnable,
+    pub placement: ScrollbarPlacement,
+    pub width: f32,
+    /// seconds without scrolling before it hides, 0 never hides
+    pub auto_hide: f32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+pub struct SmoothScrollSettings {
+    pub enable: bool,
+    /// milliseconds one glide takes, 0 jumps right away
+    pub duration: f32,
+    pub easing: ScrollEasing,
+}
+
+impl SmoothScrollSettings {
+    /// true when scrolling should glide instead of jump
+    pub fn active(&self) -> bool {
+        self.enable && self.duration > 0.
+    }
 }
 
 impl Default for TerminalSettings {
@@ -61,12 +124,41 @@ impl Default for TerminalSettings {
     }
 }
 
+/// what a new tab starts with
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct Profile {
+    pub name: String,
+    /// opened by the new tab action and a left click on "+"
+    #[serde(default)]
+    pub default: bool,
+    pub command: Shell,
+    /// folder to start in, kuterm's own folder when none
+    pub working_directory: Option<PathBuf>,
+    /// color scheme of the terminal, global theme when none
+    pub theme: Option<ThemeSettings>,
+    pub icon: Option<String>,
+    /// extra environment variables for the command
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+}
+
 impl Global for Settings {}
 
 // smaller fonts break the terminal grid, bigger ones stop growing
 const FONT_SIZE_RANGE: (f32, f32) = (6., 72.);
 // lines below 1 overlap, above 3 waste the screen
 const LINE_HEIGHT_RANGE: (f32, f32) = (1., 3.);
+// thinner bars are hard to grab, wider ones eat the grid
+const SCROLLBAR_WIDTH_RANGE: (f32, f32) = (2., 64.);
+// Duration panics on negative or huge seconds, an hour is already "never"
+const AUTO_HIDE_RANGE: (f32, f32) = (0., 3600.);
+// longer glides feel like lag, not smoothness
+const SMOOTH_SCROLL_DURATION_RANGE: (f32, f32) = (0., 1000.);
+
+pub const MAX_HISTORY_LENGTH: usize = u32::MAX as usize;
+
+// Duration panics on negative or huge seconds, an hour is already "until clicked"
+const NOTIFICATION_TIMEOUT_RANGE: (f32, f32) = (0., 3600.);
 
 fn limit(name: &str, value: f32, (min, max): (f32, f32)) -> Option<f32> {
     if value.is_nan() || value < min {
@@ -96,22 +188,48 @@ pub fn create_default_file(path: &Path, contents: &str) {
     }
 }
 
+/// read a config file, creating it from `defaults` first; falls back to defaults when missing or invalid
+pub(crate) fn load_file<T: Default>(
+    path: Option<PathBuf>,
+    defaults: &str,
+    what: &str,
+    parse: impl Fn(&str) -> serde_json_lenient::Result<T>,
+) -> T {
+    let Some(path) = path else {
+        return T::default();
+    };
+    create_default_file(&path, defaults);
+    let Ok(json) = std::fs::read_to_string(&path) else {
+        return T::default();
+    };
+    parse(&json).unwrap_or_else(|error| {
+        eprintln!("invalid {what} in {}: {error}", path.display());
+        T::default()
+    })
+}
+
+/// `$XDG_CONFIG_HOME/kuterm`, falling back to `~/.config/kuterm`
+pub fn config_dir() -> Option<PathBuf> {
+    // xdg says empty or relative values must be ignored
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    Some(config_dir.join("kuterm"))
+}
+
 impl Settings {
-    /// `$XDG_CONFIG_HOME/kuterm/settings.jsonc`, falling back to `~/.config`
+    /// `--config-file`, or `settings.jsonc` in the config dir
     pub fn path() -> Option<PathBuf> {
-        // xdg says empty or relative values must be ignored
-        let config_dir = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|dir| dir.is_absolute())
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-        Some(config_dir.join("kuterm").join("settings.jsonc"))
+        Cli::get()
+            .config_file
+            .clone()
+            .or_else(|| Some(config_dir()?.join("settings.jsonc")))
     }
 
     /// parse settings, we allow comments and trailing commas
     pub fn parse(json: &str) -> serde_json_lenient::Result<Self> {
-        let mut settings: Value = serde_json_lenient::from_str(DEFAULT_SETTINGS)?;
-        merge(&mut settings, serde_json_lenient::from_str(json)?);
-        let mut settings: Self = serde_json_lenient::from_value(settings)?;
+        let mut settings: Self = parse_over(DEFAULT_SETTINGS, json)?;
         let defaults = Self::default();
         settings.ui_font_size = limit("ui_font_size", settings.ui_font_size, FONT_SIZE_RANGE)
             .unwrap_or(defaults.ui_font_size);
@@ -122,22 +240,94 @@ impl Settings {
             terminal.line_height = limit("terminal.line_height", value, LINE_HEIGHT_RANGE)
                 .map_or(defaults.terminal.line_height, LineHeight::Custom);
         }
+        if terminal.max_history_length > MAX_HISTORY_LENGTH {
+            eprintln!(
+                "terminal.max_history_length {} is above {MAX_HISTORY_LENGTH}, using {MAX_HISTORY_LENGTH}",
+                terminal.max_history_length
+            );
+            terminal.max_history_length = MAX_HISTORY_LENGTH;
+        }
+        let scrollbar = &mut terminal.scrollbar;
+        scrollbar.width = limit(
+            "terminal.scrollbar.width",
+            scrollbar.width,
+            SCROLLBAR_WIDTH_RANGE,
+        )
+        .unwrap_or(defaults.terminal.scrollbar.width);
+        scrollbar.auto_hide = limit(
+            "terminal.scrollbar.auto_hide",
+            scrollbar.auto_hide,
+            AUTO_HIDE_RANGE,
+        )
+        .unwrap_or(defaults.terminal.scrollbar.auto_hide);
+        let smooth_scroll = &mut terminal.smooth_scroll;
+        smooth_scroll.duration = limit(
+            "terminal.smooth_scroll.duration",
+            smooth_scroll.duration,
+            SMOOTH_SCROLL_DURATION_RANGE,
+        )
+        .unwrap_or(defaults.terminal.smooth_scroll.duration);
+        settings.notifications.timeout = limit(
+            "notifications.timeout",
+            settings.notifications.timeout,
+            NOTIFICATION_TIMEOUT_RANGE,
+        )
+        .unwrap_or(defaults.notifications.timeout);
+        if settings.profiles.is_empty() {
+            eprintln!("profiles is empty, using the default profiles");
+            settings.profiles = defaults.profiles;
+        }
+        // exactly one profile is the default, the first marked one wins
+        match settings.profiles.iter().position(|profile| profile.default) {
+            Some(first) => {
+                let (head, rest) = settings.profiles.split_at_mut(first + 1);
+                for profile in rest.iter_mut().filter(|profile| profile.default) {
+                    eprintln!(
+                        "profile {:?} is also default, using {:?}",
+                        profile.name, head[first].name
+                    );
+                    profile.default = false;
+                }
+            }
+            None => settings.profiles[0].default = true,
+        }
         Ok(settings)
+    }
+
+    /// replace font families that are not installed with the bundled defaults
+    pub fn use_installed_fonts(&mut self, installed: &[String]) {
+        // the system fallback is usually proportional, which breaks the terminal grid
+        let defaults = Self::default();
+        for (name, family, default) in [
+            (
+                "ui_font_family",
+                &mut self.ui_font_family,
+                defaults.ui_font_family,
+            ),
+            (
+                "terminal.font_family",
+                &mut self.terminal.font_family,
+                defaults.terminal.font_family,
+            ),
+        ] {
+            if !installed.contains(family) {
+                eprintln!("{name} {family:?} is not installed, using {default:?}");
+                *family = default;
+            }
+        }
+    }
+
+    /// profile opened by the new tab action
+    pub fn default_profile(&self) -> &Profile {
+        self.profiles
+            .iter()
+            .find(|profile| profile.default)
+            .unwrap_or(&self.profiles[0])
     }
 
     /// load settings from the settings file, using defaults when it is missing or invalid
     pub fn load() -> Self {
-        let Some(path) = Self::path() else {
-            return Self::default();
-        };
-        create_default_file(&path, DEFAULT_SETTINGS);
-        let Ok(json) = std::fs::read_to_string(&path) else {
-            return Self::default();
-        };
-        Self::parse(&json).unwrap_or_else(|error| {
-            eprintln!("invalid settings in {}: {error}", path.display());
-            Self::default()
-        })
+        load_file(Self::path(), DEFAULT_SETTINGS, "settings", Self::parse)
     }
 
     /// settings loaded at startup
@@ -158,6 +348,16 @@ pub(crate) fn merge(base: &mut Value, overrides: Value) {
         }
         (base, overrides) => *base = overrides,
     }
+}
+
+/// parse `json` deep merged over the bundled `defaults`
+pub(crate) fn parse_over<T: DeserializeOwned>(
+    defaults: &str,
+    json: &str,
+) -> serde_json_lenient::Result<T> {
+    let mut value: Value = serde_json_lenient::from_str(defaults)?;
+    merge(&mut value, serde_json_lenient::from_str(json)?);
+    serde_json_lenient::from_value(value)
 }
 
 #[cfg(test)]
@@ -197,15 +397,6 @@ pub(crate) mod tests {
     fn empty_file_uses_defaults() {
         let settings = Settings::parse("{}").unwrap();
         assert_eq!(settings, Settings::default());
-        assert_eq!(settings.ui_font_size, 16.);
-        assert_eq!(settings.terminal.font_size, 16.);
-        assert_eq!(
-            settings.terminal.font_family,
-            "JetBrainsMonoNL Nerd Font Mono"
-        );
-        assert_eq!(settings.terminal.shell, Shell::System);
-        assert_eq!(settings.terminal.line_height.value(), 1.3);
-        assert_eq!(settings.terminal.cursor_shape, CursorShape::Bar);
     }
 
     #[test]
@@ -224,10 +415,13 @@ pub(crate) mod tests {
                 // comments are allowed
                 "ui_font_family": "JetBrainsMonoNL Nerd Font Mono",
                 "ui_font_size": 16, // inline comments too
-                "terminal": {
-                    "shell": {
+                "profiles": [{
+                    "name": "bash",
+                    "command": {
                         "with_arguments": { "program": "/bin/bash", "args": ["--login"] }
                     },
+                }],
+                "terminal": {
                     "font_family": "JetBrainsMonoNL Nerd Font Mono",
                     "font_size": 16,
                     "line_height": { "custom": 2 },
@@ -239,7 +433,7 @@ pub(crate) mod tests {
         assert_eq!(settings.ui_font_family, "JetBrainsMonoNL Nerd Font Mono");
         assert_eq!(settings.ui_font_size, 16.);
         assert_eq!(
-            settings.terminal.shell,
+            settings.default_profile().command,
             Shell::WithArguments {
                 program: "/bin/bash".into(),
                 args: vec!["--login".into()],
@@ -256,20 +450,21 @@ pub(crate) mod tests {
 
     #[test]
     fn parses_shell_variants() {
-        let parse = |json: &str| Settings::parse(json).unwrap().terminal.shell;
-        assert_eq!(parse(r#"{"terminal": {"shell": "system"}}"#), Shell::System);
-        assert_eq!(
-            parse(r#"{"terminal": {"shell": {"program": "zsh"}}}"#),
-            Shell::Program("zsh".into())
-        );
+        let parse = |command: &str| {
+            let json = format!(r#"{{"profiles": [{{"name": "a", "command": {command}}}]}}"#);
+            Settings::parse(&json).unwrap().profiles[0].command.clone()
+        };
+        assert_eq!(parse(r#""system""#), Shell::System);
+        assert_eq!(parse(r#"{"program": "zsh"}"#), Shell::Program("zsh".into()));
     }
 
     #[test]
     fn partial_terminal_section_keeps_other_defaults() {
         let settings = Settings::parse(r#"{"terminal": {"cursor_shape": "hollow"}}"#).unwrap();
+        let defaults = Settings::default();
         assert_eq!(settings.terminal.cursor_shape, CursorShape::Hollow);
-        assert_eq!(settings.terminal.font_size, 16.);
-        assert_eq!(settings.ui_font_size, 16.);
+        assert_eq!(settings.terminal.font_size, defaults.terminal.font_size);
+        assert_eq!(settings.ui_font_size, defaults.ui_font_size);
     }
 
     #[test]
@@ -356,8 +551,13 @@ pub(crate) mod tests {
             r#"{"ui_font_size": "big"}"#,
             r#"{"terminal": {"cursor_shape": "triangle"}}"#,
             r#"{"terminal": {"line_height": "tall"}}"#,
-            r#"{"terminal": {"shell": {"unknown": "zsh"}}}"#,
-            r#"{"terminal": {"shell": {"with_arguments": {"program": "bash"}}}}"#,
+            r#"{"profiles": [{"name": "a", "command": {"unknown": "zsh"}}]}"#,
+            r#"{"profiles": [{"name": "a", "command": {"with_arguments": {"program": "bash"}}}]}"#,
+            r#"{"profiles": [{"name": "a"}]}"#,
+            r#"{"profiles": [{"command": "system"}]}"#,
+            r#"{"profiles": [{"name": "a", "command": "system", "env": {"A": 1}}]}"#,
+            r#"{"profiles": [{"name": "a", "command": "system", "theme": "dark"}]}"#,
+            r#"{"profiles": {"name": "a", "command": "system"}}"#,
             r#"{"theme": "dark"}"#,
             r#"{"theme": {"mode": "auto"}}"#,
             r#"{"theme": {"mode": null}}"#,
@@ -423,16 +623,21 @@ pub(crate) mod tests {
 
     #[test]
     fn font_size_below_min_uses_default() {
+        let defaults = Settings::default();
         for field in ["ui_font_size", "terminal.font_size"] {
             for value in [
                 "0", "0.0", "-0", "-0.0", "1", "0.5", "1e-30", "5", "-1", "-6", "-16", "-72",
                 "-100", "-1e30", "-3.4e38",
             ] {
                 let got = parse_font(field, value);
+                let default = match field {
+                    "ui_font_size" => defaults.ui_font_size,
+                    _ => defaults.terminal.font_size,
+                };
                 // exactly the default, not -0.0 or a clamp to 6
                 assert_eq!(
                     got.to_bits(),
-                    16.0f32.to_bits(),
+                    default.to_bits(),
                     "{field} {value} gave {got}"
                 );
             }
@@ -475,5 +680,310 @@ pub(crate) mod tests {
         );
         let settings = Settings::parse(r#"{"tab_title": ["folder"]}"#).unwrap();
         assert_eq!(settings.tab_title, vec![TabTitleBlock::Folder]);
+    }
+
+    #[test]
+    fn bundled_settings_have_one_default_profile() {
+        let settings = Settings::default();
+        assert_eq!(settings.profiles.len(), 1);
+        let profile = settings.default_profile();
+        assert!(profile.default);
+        assert_eq!(profile.command, Shell::System);
+        assert_eq!(profile.working_directory, None);
+        assert_eq!(profile.theme, None);
+        assert!(profile.env.is_empty());
+    }
+
+    #[test]
+    fn profile_optional_keys_can_be_left_out() {
+        let settings = Settings::parse(
+            r#"{"profiles": [
+                {"name": "a", "command": "system"},
+                {
+                    "name": "b",
+                    "default": true,
+                    "command": {"program": "zsh"},
+                    "working_directory": "~/src",
+                    "theme": {"mode": "dark", "dark": "themes/b.jsonc"},
+                    "env": {"EDITOR": "vim"},
+                },
+            ]}"#,
+        )
+        .unwrap();
+        let [a, b] = &settings.profiles[..] else {
+            panic!("expected two profiles");
+        };
+        assert!(!a.default);
+        assert_eq!(a.working_directory, None);
+        assert_eq!(a.theme, None);
+        assert!(a.env.is_empty());
+        assert_eq!(settings.default_profile(), b);
+        assert_eq!(b.command, Shell::Program("zsh".into()));
+        assert_eq!(b.working_directory, Some(PathBuf::from("~/src")));
+        let theme = b.theme.as_ref().unwrap();
+        assert_eq!(theme.mode, ThemeMode::Dark);
+        assert_eq!(theme.dark, Some(PathBuf::from("themes/b.jsonc")));
+        assert_eq!(theme.light, None);
+        assert_eq!(b.env["EDITOR"], "vim");
+    }
+
+    #[test]
+    fn exactly_one_profile_is_default() {
+        let a = r#"{"name": "a", "command": "system"}"#;
+        let a_default = r#"{"name": "a", "default": true, "command": "system"}"#;
+        let b = r#"{"name": "b", "command": "system"}"#;
+        let b_default = r#"{"name": "b", "default": true, "command": "system"}"#;
+        let c_default = r#"{"name": "c", "default": true, "command": "system"}"#;
+        // default flags of the parsed profiles, in order
+        let parse = |profiles: &[&str]| -> Vec<bool> {
+            let json = format!(r#"{{"profiles": [{}]}}"#, profiles.join(","));
+            let settings = Settings::parse(&json).unwrap();
+            settings
+                .profiles
+                .iter()
+                .map(|profile| profile.default)
+                .collect()
+        };
+        // none marked, the first one is used
+        assert_eq!(parse(&[a, b]), [true, false]);
+        assert_eq!(parse(&[b_default]), [true]);
+        assert_eq!(parse(&[a, b_default]), [false, true]);
+        // several marked, the first marked one wins
+        assert_eq!(parse(&[a, b_default, c_default]), [false, true, false]);
+        assert_eq!(
+            parse(&[a_default, b_default, c_default]),
+            [true, false, false]
+        );
+    }
+
+    #[test]
+    fn parses_tab_icon() {
+        let defaults = Settings::default().tab_icon;
+        let parse = |json: &str| Settings::parse(json).unwrap().tab_icon;
+        for (json, position) in [
+            (
+                r#"{"tab_icon": {"position": "left"}}"#,
+                TabIconPosition::Left,
+            ),
+            (
+                r#"{"tab_icon": {"position": "right"}}"#,
+                TabIconPosition::Right,
+            ),
+        ] {
+            let expected = TabIconSettings {
+                position,
+                ..defaults.clone()
+            };
+            assert_eq!(parse(json), expected);
+        }
+        for dynamic in [true, false] {
+            let json = format!(r#"{{"tab_icon": {{"dynamic": {dynamic}, "default": "D"}}}}"#);
+            let icon = parse(&json);
+            assert_eq!(icon.dynamic, dynamic);
+            assert_eq!(icon.default, "D");
+            assert_eq!(icon.position, defaults.position);
+        }
+
+        for json in [
+            r#"{"tab_icon": "left"}"#,
+            r#"{"tab_icon": {"position": "top"}}"#,
+            r#"{"tab_icon": {"dynamic": "yes"}}"#,
+            r#"{"tab_icon": {"default": null}}"#,
+            r#"{"profiles": [{"name": "a", "command": "system", "icon": 5}]}"#,
+        ] {
+            assert!(
+                Settings::parse(json).is_err(),
+                "expected error for {json:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_icon_is_optional() {
+        let settings = Settings::parse(
+            r#"{"profiles": [
+                {"name": "a", "command": "system"},
+                {"name": "b", "command": "system", "icon": "B"},
+                {"name": "c", "command": "system", "icon": null},
+            ]}"#,
+        )
+        .unwrap();
+        let icons: Vec<_> = settings
+            .profiles
+            .iter()
+            .map(|p| p.icon.as_deref())
+            .collect();
+        assert_eq!(icons, [None, Some("B"), None]);
+    }
+
+    #[test]
+    fn parses_scrollbar() {
+        let settings = Settings::parse(
+            r#"{"terminal": {"max_history_length": 0, "scrollbar": {
+                "enable": "on", "placement": "left", "width": 12, "auto_hide": 1.5,
+            }}}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.terminal.max_history_length, 0);
+        assert_eq!(
+            settings.terminal.scrollbar,
+            ScrollbarSettings {
+                enable: ScrollbarEnable::On,
+                placement: ScrollbarPlacement::Left,
+                width: 12.,
+                auto_hide: 1.5,
+            }
+        );
+        let enable = |value: &str| {
+            let json = format!(r#"{{"terminal": {{"scrollbar": {{"enable": "{value}"}}}}}}"#);
+            Settings::parse(&json).unwrap().terminal.scrollbar
+        };
+        let defaults = Settings::default().terminal.scrollbar;
+        for (value, expected) in [
+            ("off", ScrollbarEnable::Off),
+            ("dynamic", ScrollbarEnable::Dynamic),
+        ] {
+            let scrollbar = enable(value);
+            assert_eq!(scrollbar.enable, expected);
+            // other keys keep their defaults
+            assert_eq!(scrollbar.placement, defaults.placement);
+            assert_eq!(scrollbar.width, defaults.width);
+        }
+
+        for json in [
+            r#"{"terminal": {"scrollbar": "on"}}"#,
+            r#"{"terminal": {"scrollbar": {"enable": true}}}"#,
+            r#"{"terminal": {"scrollbar": {"placement": "top"}}}"#,
+            r#"{"terminal": {"scrollbar": {"auto_hide": "1s"}}}"#,
+            r#"{"terminal": {"max_history_length": -1}}"#,
+        ] {
+            assert!(
+                Settings::parse(json).is_err(),
+                "expected error for {json:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scrollbar_width_limits() {
+        let width = |value: &str| {
+            let json = format!(r#"{{"terminal": {{"scrollbar": {{"width": {value}}}}}}}"#);
+            Settings::parse(&json).unwrap().terminal.scrollbar.width
+        };
+        let default = Settings::default().terminal.scrollbar.width;
+        assert_eq!(width("0"), default);
+        assert_eq!(width("1.9"), default);
+        assert_eq!(width("-5"), default);
+        assert_eq!(width("2"), 2.);
+        assert_eq!(width("64"), 64.);
+        assert_eq!(width("65"), 64.);
+        assert_eq!(width("1e30"), 64.);
+    }
+
+    #[test]
+    fn scrollbar_auto_hide_limits() {
+        let auto_hide = |value: &str| {
+            let json = format!(r#"{{"terminal": {{"scrollbar": {{"auto_hide": {value}}}}}}}"#);
+            Settings::parse(&json).unwrap().terminal.scrollbar.auto_hide
+        };
+        let default = Settings::default().terminal.scrollbar.auto_hide;
+        assert_eq!(auto_hide("-1"), default);
+        assert_eq!(auto_hide("-0.5"), default);
+        assert_eq!(auto_hide("0"), 0.);
+        assert_eq!(auto_hide("0.25"), 0.25);
+        assert_eq!(auto_hide("3600"), 3600.);
+        assert_eq!(auto_hide("3601"), 3600.);
+        assert_eq!(auto_hide("1e30"), 3600.);
+    }
+
+    #[test]
+    fn notification_timeout_limits() {
+        let timeout = |value: &str| {
+            let json = format!(r#"{{"notifications": {{"timeout": {value}}}}}"#);
+            Settings::parse(&json).unwrap().notifications.timeout
+        };
+        let default = Settings::default().notifications.timeout;
+        assert_eq!(timeout("-1"), default);
+        assert_eq!(timeout("0"), 0.);
+        assert_eq!(timeout("2.5"), 2.5);
+        assert_eq!(timeout("3601"), 3600.);
+    }
+
+    #[test]
+    fn parses_smooth_scroll() {
+        let smooth = |json: &str| Settings::parse(json).unwrap().terminal.smooth_scroll;
+        let parsed = smooth(
+            r#"{"terminal": {"smooth_scroll": {"enable": false, "duration": 300, "easing": "linear"}}}"#,
+        );
+        assert_eq!(
+            parsed,
+            SmoothScrollSettings {
+                enable: false,
+                duration: 300.,
+                easing: ScrollEasing::Linear,
+            }
+        );
+        assert!(!parsed.active());
+        let easing = |name: &str| {
+            let json = format!(r#"{{"terminal": {{"smooth_scroll": {{"easing": "{name}"}}}}}}"#);
+            smooth(&json).easing
+        };
+        assert_eq!(easing("ease_out"), ScrollEasing::EaseOut);
+        assert_eq!(easing("ease_in_out"), ScrollEasing::EaseInOut);
+        assert!(
+            Settings::parse(r#"{"terminal": {"smooth_scroll": {"easing": "bounce"}}}"#).is_err()
+        );
+        assert!(Settings::parse(r#"{"terminal": {"smooth_scroll": {"enable": "yes"}}}"#).is_err());
+
+        let duration = |value: &str| {
+            let json = format!(r#"{{"terminal": {{"smooth_scroll": {{"duration": {value}}}}}}}"#);
+            smooth(&json)
+        };
+        let default = Settings::default().terminal.smooth_scroll.duration;
+        assert_eq!(duration("-1").duration, default);
+        assert_eq!(duration("1000").duration, 1000.);
+        assert_eq!(duration("5000").duration, 1000.);
+        // 0 jumps, even when enabled
+        let zero = duration(r#"0, "enable": true"#);
+        assert_eq!(zero.duration, 0.);
+        assert!(!zero.active());
+    }
+
+    #[test]
+    fn max_history_length_is_capped() {
+        let history = |value: &str| {
+            let json = format!(r#"{{"terminal": {{"max_history_length": {value}}}}}"#);
+            Settings::parse(&json).unwrap().terminal.max_history_length
+        };
+        assert_eq!(history("0"), 0);
+        assert_eq!(history("5000"), 5000);
+        assert_eq!(history("4294967295"), MAX_HISTORY_LENGTH);
+        assert_eq!(history("18446744073709551615"), MAX_HISTORY_LENGTH);
+    }
+
+    #[test]
+    fn missing_font_families_use_defaults() {
+        let defaults = Settings::default();
+        let mut settings = Settings::parse(
+            r#"{"ui_font_family": "No Such Font", "terminal": {"font_family": "DejaVu Sans Mono"}}"#,
+        )
+        .unwrap();
+        settings.use_installed_fonts(&[
+            "DejaVu Sans Mono".to_string(),
+            defaults.ui_font_family.clone(),
+        ]);
+        assert_eq!(settings.ui_font_family, defaults.ui_font_family);
+        assert_eq!(settings.terminal.font_family, "DejaVu Sans Mono");
+
+        settings.use_installed_fonts(&[]);
+        assert_eq!(settings.terminal.font_family, defaults.terminal.font_family);
+    }
+
+    #[test]
+    fn empty_profiles_use_bundled_ones() {
+        assert_eq!(
+            Settings::parse(r#"{"profiles": []}"#).unwrap().profiles,
+            Settings::default().profiles
+        );
     }
 }

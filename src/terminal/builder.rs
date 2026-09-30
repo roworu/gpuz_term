@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -26,9 +27,7 @@ use futures::{
 use gpui::{Context, Task};
 
 use super::{Content, Terminal, TerminalBounds};
-use crate::settings::{Shell, TerminalSettings};
-
-const DEFAULT_SCROLL_HISTORY_LINES: usize = 10_000;
+use crate::settings::{Profile, Shell, TerminalSettings};
 
 #[derive(Clone)]
 pub(super) struct ZedListener {
@@ -53,8 +52,12 @@ pub struct TerminalBuilder {
 }
 
 impl TerminalBuilder {
-    /// spawn configured shell in a new pty
-    pub fn new(settings: &TerminalSettings, window_id: u64) -> Result<TerminalBuilder> {
+    /// spawn the profile command in a new pty
+    pub fn new(
+        settings: &TerminalSettings,
+        profile: &Profile,
+        window_id: u64,
+    ) -> Result<TerminalBuilder> {
         let mut env = HashMap::new();
         if std::env::var("LANG").is_err() {
             env.insert("LANG".to_string(), "en_US.UTF-8".to_string());
@@ -66,26 +69,38 @@ impl TerminalBuilder {
             "TERM_PROGRAM_VERSION".to_string(),
             env!("CARGO_PKG_VERSION").to_string(),
         );
+        // profile values go last, so they can override ours
+        env.extend(profile.env.clone());
 
-        let shell = match &settings.shell {
+        let shell = match &profile.command {
             Shell::System => None,
             Shell::Program(program) => Some(tty::Shell::new(program.clone(), Vec::new())),
             Shell::WithArguments { program, args } => {
                 Some(tty::Shell::new(program.clone(), args.clone()))
             }
         };
+        let working_directory = profile.working_directory.as_ref().map(|dir| {
+            match (dir.strip_prefix("~"), std::env::var_os("HOME")) {
+                (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
+                _ => dir.clone(),
+            }
+        });
         let pty_options = tty::Options {
             shell,
+            working_directory,
             drain_on_exit: true,
             env,
             ..Default::default()
         };
 
         let config = Config {
-            scrolling_history: DEFAULT_SCROLL_HISTORY_LINES,
             default_cursor_style: CursorStyle {
                 shape: settings.cursor_shape.into(),
                 blinking: false,
+            },
+            scrolling_history: match settings.max_history_length {
+                0 => crate::settings::MAX_HISTORY_LENGTH,
+                lines => lines,
             },
             ..Config::default()
         };
@@ -126,6 +141,8 @@ impl TerminalBuilder {
             dirty,
             title: String::new(),
             shell_pid,
+            theme_settings: profile.theme.clone(),
+            theme: None,
             _event_loop_task: Task::ready(()),
         };
 
@@ -147,7 +164,7 @@ impl TerminalBuilder {
                 };
 
                 // then batch rest in 4ms windows
-                'outer: loop {
+                loop {
                     let mut events = Vec::new();
                     let mut timer = cx
                         .background_executor()
@@ -172,7 +189,7 @@ impl TerminalBuilder {
                     }
 
                     if events.is_empty() && !wakeup {
-                        break 'outer;
+                        break;
                     }
 
                     let Ok(()) = terminal.update(cx, |this, cx| {
