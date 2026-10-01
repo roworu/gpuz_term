@@ -229,6 +229,142 @@ def test_middle_click_closes_tab(app_factory):
     app.wait(lambda: len(borders(app)) == 2, msg=f"two tabs left, edges {borders(app)}")
 
 
+def test_drag_reorders_tabs(app_factory):
+    """dragging the first tab past the others moves it, the active tab follows its tab"""
+    app = bar_app(app_factory, tab_width=200, **PLAIN)
+    open_tabs(app, 3)
+    h = app.bar_height()
+    app.drag((100, h // 2), (500, h // 2))
+    # the first tab is now last, so the active third tab sits in the middle
+    app.wait_title("2")
+    app.snap("first tab dragged to the end")
+    app.click(100, h // 2)
+    app.wait_title("1")
+
+
+def test_disabled_drag_tabs_keeps_order(app_factory):
+    """drag_tabs false ignores the mouse drag, the tabs keep their order"""
+    app = bar_app(app_factory, tab_width=200, drag_tabs=False, **PLAIN)
+    open_tabs(app, 3)
+    h = app.bar_height()
+    app.drag((100, h // 2), (500, h // 2))
+    time.sleep(0.5)
+    assert app.title() == "3", app.title()
+    app.click(100, h // 2)
+    app.wait_title("1")
+
+
+def divider_shown(app: App, vertical: bool) -> bool:
+    """true when a border colored divider crosses the middle of the window"""
+    w, h = app.size()
+    mid = w // 2 if vertical else h // 2
+    img = app.shot()
+    strip = img[h // 2 - 8 : h // 2 + 8, mid] if vertical else img[mid, w // 2 - 8 : w // 2 + 8]
+    return near(strip.reshape(-1, 1, 3), C["border"]).any()
+
+
+def test_drag_tab_to_a_side_splits_the_pane(app_factory):
+    """dragging a tab to the right half of the terminal splits it into two panes"""
+    app = bar_app(app_factory, tab_width=200, **PLAIN)
+    open_tabs(app, 2)
+    w, h = app.size()
+    app.drag((100, app.bar_height() // 2), (w * 3 // 4, h // 2))
+    app.wait(lambda: divider_shown(app, vertical=True), msg="no vertical divider between the panes")
+    app.snap("tab dragged to the right half split the pane")
+
+
+def test_drag_tab_to_the_bottom_half_splits_the_pane(app_factory):
+    """dragging a tab to the bottom half of the terminal splits it into two panes"""
+    app = bar_app(app_factory, tab_width=200, **PLAIN)
+    open_tabs(app, 2)
+    w, h = app.size()
+    app.drag((100, app.bar_height() // 2), (w // 2, h * 3 // 4))
+    app.wait(
+        lambda: divider_shown(app, vertical=False),
+        msg="no horizontal divider between the panes",
+    )
+    app.snap("tab dragged to the bottom half split the pane")
+
+
+def border_at(app: App, x: int, y: int) -> bool:
+    """true when the pixel at (x, y) has the theme border color"""
+    return near(app.shot()[y : y + 1, x : x + 1], C["border"]).any()
+
+
+def divider_axis(app: App) -> str | None:
+    """orientation of the split divider crossing the middle of the window, none when unsplit"""
+    w, h = app.size()
+    if not border_at(app, w // 2, h // 2):
+        return None
+    if border_at(app, w // 2, h // 4):
+        return "vertical"
+    if border_at(app, w // 4, h // 2):
+        return "horizontal"
+    return None
+
+
+def dialog(app: App) -> tuple | None:
+    """bbox of the danger colored close button, none while no confirmation is up"""
+    mask = near(app.shot(), C["danger_button"])
+    return mask_bbox(mask) if mask.sum() > 200 else None
+
+
+@pytest.mark.parametrize(
+    "command,axis",
+    [
+        ("split left", "vertical"),
+        ("split right", "vertical"),
+        ("split up", "horizontal"),
+        ("split down", "horizontal"),
+    ],
+)
+def test_split_commands_split_the_focused_pane(app_factory, command, axis):
+    """the bundled split commands move the active tab into a new pane on the given side"""
+    app = bar_app(app_factory, tab_width=200, **PLAIN)
+    open_tabs(app, 2)
+    app.palette(command)
+    app.wait(lambda: divider_axis(app) == axis, msg=f"no {axis} divider after {command}")
+    app.snap(f"{command} split the focused pane")
+
+
+def test_closing_one_nested_pane_keeps_its_sibling(app_factory):
+    """closing the bottom of two stacked panes keeps the top one beside the left pane"""
+    app = bar_app(app_factory, tab_width=200, **PLAIN)
+    open_tabs(app, 2)
+    app.palette("split right")
+    app.wait(lambda: divider_axis(app) == "vertical", msg="no side by side split")
+    app.palette("split down")
+    w, h = app.size()
+    app.wait(lambda: border_at(app, w * 3 // 4, h // 2), msg="no stacked split in the right pane")
+    # the new bottom pane has focus, closing its only tab must not close the top pane too
+    app.key("ctrl+shift+w")
+    app.wait(lambda: not border_at(app, w * 3 // 4, h // 2), msg="the bottom pane did not close")
+    assert divider_axis(app) == "vertical", "the top pane was closed with the bottom one"
+    app.snap("closing the bottom pane kept the top one")
+
+
+def test_closing_the_surviving_pane_after_a_nested_collapse(app_factory):
+    """closing a nested pane gives focus to its sibling, so the next close acts on it"""
+    app = bar_app(app_factory, tab_width=200, **PLAIN)
+    open_tabs(app, 2)
+    app.palette("split right")
+    app.wait(lambda: divider_axis(app) == "vertical", msg="no side by side split")
+    app.palette("split down")
+    w, h = app.size()
+    app.wait(lambda: border_at(app, w * 3 // 4, h // 2), msg="no stacked split in the right pane")
+    # a program runs in the top pane, then the focused bottom pane closes
+    app.click(w * 3 // 4, h // 4)
+    app.run("sleep 1000")
+    time.sleep(0.5)
+    app.click(w * 3 // 4, h * 3 // 4)
+    app.key("ctrl+shift+w")
+    app.wait(lambda: not border_at(app, w * 3 // 4, h // 2), msg="the bottom pane did not close")
+    # the top pane took its place and keeps focus, so closing it must ask about the program
+    app.key("ctrl+shift+w")
+    app.wait(lambda: dialog(app), msg="the surviving pane did not get focus")
+    app.snap("closing the surviving pane asked about its program")
+
+
 def test_overflowing_tabs_keep_width_and_scroll(app_factory):
     """tabs that do not fit keep their width, the wheel scrolls them into view"""
     app = bar_app(app_factory, tab_width=250, new_tab_button="right", **PLAIN)

@@ -36,6 +36,7 @@ pub struct Settings {
     pub tab_title_align: TabTitleAlign,
     pub tab_icon: TabIconSettings,
     pub show_tab_close_button: bool,
+    pub drag_tabs: bool,
     pub close_running_tab_warn: bool,
     pub new_tab_button: NewTabButton,
     pub window_title: Vec<TabTitleBlock>,

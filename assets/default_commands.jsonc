@@ -31,6 +31,10 @@
 //   "close_tab"                        - close the active tab
 //   "close_tabs_to_right"              - close every tab to the right of the active one
 //   "close_tabs_to_left"               - close every tab to the left of the active one
+//   "split_left"                       - split the focused pane, moving its active tab left
+//   "split_right"                      - split the focused pane, moving its active tab right
+//   "split_up"                         - split the focused pane, moving its active tab above
+//   "split_down"                       - split the focused pane, moving its active tab below
 //   "next_tab"                         - switch to the tab on the right
 //   "prev_tab"                         - switch to the tab on the left
 //   { "activate_tab": 2 }              - switch to the tab at this 1 based position
@@ -65,6 +69,10 @@
     { "name": "close current", "category": "tabs", "actions": ["close_tab"] },
     { "name": "close tabs to the right", "category": "tabs", "actions": ["close_tabs_to_right"] },
     { "name": "close tabs to the left", "category": "tabs", "actions": ["close_tabs_to_left"] },
+    { "name": "split left", "category": "tabs", "actions": ["split_left"] },
+    { "name": "split right", "category": "tabs", "actions": ["split_right"] },
+    { "name": "split up", "category": "tabs", "actions": ["split_up"] },
+    { "name": "split down", "category": "tabs", "actions": ["split_down"] },
     { "name": "switch to left", "category": "tabs", "actions": ["prev_tab"] },
     { "name": "switch to right", "category": "tabs", "actions": ["next_tab"] },
     { "name": "go to tab", "category": "tabs", "actions": ["pick_tab"] },

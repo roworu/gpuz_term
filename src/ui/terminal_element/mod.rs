@@ -71,6 +71,7 @@ impl TerminalElement {
         let view = self.terminal_view.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble
+                && !cx.has_active_drag()
                 && event.button == MouseButton::Left
                 && hitbox.is_hovered(window)
             {
@@ -80,7 +81,10 @@ impl TerminalElement {
         });
         let view = self.terminal_view.clone();
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-            if phase == DispatchPhase::Bubble && event.pressed_button == Some(MouseButton::Left) {
+            if phase == DispatchPhase::Bubble
+                && !cx.has_active_drag()
+                && event.pressed_button == Some(MouseButton::Left)
+            {
                 let offset = scrollbar.offset_at(event.position.y);
                 view.update(cx, |view, cx| view.scrollbar_drag(offset, cx));
             }
@@ -92,7 +96,10 @@ impl TerminalElement {
         let view = self.terminal_view.clone();
         let down_hitbox = hitbox.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-            if phase == DispatchPhase::Bubble && down_hitbox.is_hovered(window) {
+            if phase == DispatchPhase::Bubble
+                && !cx.has_active_drag()
+                && down_hitbox.is_hovered(window)
+            {
                 view.update(cx, |view, cx| view.mouse_down(event, cx));
             }
         });
@@ -100,6 +107,7 @@ impl TerminalElement {
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
             // moves without a button only matter to programs tracking all motion
             if phase == DispatchPhase::Bubble
+                && !cx.has_active_drag()
                 && (event.pressed_button.is_some() || (report_motion && hitbox.is_hovered(window)))
             {
                 view.update(cx, |view, cx| view.mouse_move(event, cx));
@@ -107,7 +115,7 @@ impl TerminalElement {
         });
         let view = self.terminal_view.clone();
         window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-            if phase == DispatchPhase::Bubble {
+            if phase == DispatchPhase::Bubble && !cx.has_active_drag() {
                 view.update(cx, |view, cx| view.mouse_up(event, cx));
             }
         });

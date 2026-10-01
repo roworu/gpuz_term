@@ -77,9 +77,9 @@ impl Workspace {
             .iter()
             .find(|notification| notification.id == id)
             .and_then(|notification| notification.tab.as_ref())
-            .and_then(|view| self.tabs.iter().position(|tab| &tab.view == view));
-        if let Some(ix) = tab {
-            self.activate_tab(ix, window, cx);
+            .and_then(|view| self.find_view(view));
+        if let Some((pane, ix)) = tab {
+            self.activate_tab(pane, ix, window, cx);
         }
         self.dismiss_notification(id, cx);
     }
@@ -98,9 +98,10 @@ impl Workspace {
             loop {
                 cx.background_executor().timer(DONE_POLL).await;
                 let Ok(tab) = this.update(cx, |this, _| {
-                    this.tabs
-                        .iter()
-                        .find(|tab| tab.view == view)
+                    let (pane, ix) = this.find_view(&view)?;
+                    this.pane(pane)?
+                        .tabs
+                        .get(ix)
                         .map(|tab| tab.ready && tab.pending_input.is_empty())
                 }) else {
                     return;

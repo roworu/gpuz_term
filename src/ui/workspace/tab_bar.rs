@@ -4,15 +4,15 @@
 use std::sync::LazyLock;
 
 use gpui::{
-    AnyElement, App, Context, Div, MouseButton, ScrollHandle, Stateful, Window, anchored, deferred,
-    div, prelude::*, px, rems,
+    AnyElement, App, Context, CursorStyle, Div, DragMoveEvent, MouseButton, ScrollHandle, Stateful,
+    Window, anchored, deferred, div, prelude::*, px, relative, rems,
 };
 use skrifa::{
     FontRef, MetadataProvider,
     instance::{LocationRef, Size},
 };
 
-use super::{Workspace, end_truncated::EndTruncated};
+use super::{DropSide, LayoutNode, Pane, SplitAxis, Workspace, end_truncated::EndTruncated};
 use crate::{
     settings::{NewTabButton, Settings, TabIconPosition, TabTitleAlign},
     theme::Theme,
@@ -20,6 +20,9 @@ use crate::{
 
 // tab bar text size in rems, the icon offset is scaled by it
 const TEXT_SIZE: f32 = 0.875;
+
+// width of the divider between two split panes
+const DIVIDER_WIDTH: f32 = 4.;
 
 /// how far `icon` must move down, in ems, for its lowest point to stand on the baseline
 fn icon_drop(icon: &str) -> f32 {
@@ -102,10 +105,75 @@ fn tab(ix: usize, title: String, icon: String, settings: &Settings) -> Stateful<
         })
 }
 
+/// a tab picked up with the mouse, drawn as its own preview while dragging
+#[derive(Clone)]
+struct DraggedTab {
+    /// pane the tab was dragged out of
+    pane: usize,
+    ix: usize,
+    title: String,
+    icon: String,
+}
+
+impl Render for DraggedTab {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::get(cx);
+        let settings = Settings::get(cx);
+        let icon = div()
+            .flex_none()
+            .relative()
+            .top(rems(icon_drop(&self.icon) * TEXT_SIZE))
+            .child(self.icon.clone());
+        let title = div().min_w_0().overflow_hidden().child(self.title.clone());
+        div()
+            .id("dragged-tab")
+            .flex()
+            .items_center()
+            .gap_1()
+            .h(rems(2.))
+            .px_3()
+            .max_w(px(settings.tab_width as f32))
+            .whitespace_nowrap()
+            .overflow_hidden()
+            .bg(theme.tab_active_background)
+            .text_color(theme.text)
+            .border_1()
+            .border_color(theme.border)
+            .map(|tab| match settings.tab_icon.position {
+                TabIconPosition::Left => tab.child(icon).child(title),
+                TabIconPosition::Right => tab.child(title).child(icon),
+            })
+    }
+}
+
+/// divider handle, dragged to resize a split. the preview it draws is never seen
+#[derive(Clone)]
+struct SplitDrag;
+
+impl Render for SplitDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+/// translucent half pane showing where a dropped tab splits
+fn drop_overlay(side: DropSide, theme: &Theme) -> AnyElement {
+    div()
+        .absolute()
+        .bg(theme.text.opacity(0.15))
+        .map(|overlay| match side {
+            DropSide::Left => overlay.top_0().bottom_0().left_0().w(relative(0.5)),
+            DropSide::Right => overlay.top_0().bottom_0().right_0().w(relative(0.5)),
+            DropSide::Top => overlay.left_0().right_0().top_0().h(relative(0.5)),
+            DropSide::Bottom => overlay.left_0().right_0().bottom_0().h(relative(0.5)),
+        })
+        .into_any_element()
+}
+
 impl Workspace {
-    /// title shown for the tab at `ix`, also listed by the tab picker
-    pub(super) fn tab_title(&self, ix: usize, cx: &App) -> String {
-        let tab_state = &self.tabs[ix];
+    /// title shown for tab `ix` of pane `pane_id`, also listed by the tab picker
+    pub(super) fn tab_title(&self, pane_id: usize, ix: usize, cx: &App) -> String {
+        let tab_state = &self.pane(pane_id).expect("pane from caller").tabs[ix];
         // the program title stands in until the first refresh, or when the blocks are empty
         if tab_state.title.is_empty() {
             tab_state
@@ -119,53 +187,280 @@ impl Workspace {
         }
     }
 
-    fn render_tab(&self, ix: usize, cx: &Context<Self>) -> Stateful<Div> {
-        let is_active = ix == self.active;
+    fn render_tab(&self, pane: usize, ix: usize, cx: &Context<Self>) -> Stateful<Div> {
+        let is_active = self.pane(pane).is_some_and(|state| ix == state.active);
         let theme = Theme::get(cx);
         let settings = Settings::get(cx);
-        tab(
-            ix,
-            self.tab_title(ix, cx),
-            self.tabs[ix].icon.clone(),
-            settings,
-        )
-        .group("tab")
-        .border_r_1()
-        .border_color(theme.border)
-        .when(is_active, |tab| tab.bg(theme.tab_active_background))
-        .text_color(if is_active {
-            theme.text
-        } else {
-            theme.text_muted
-        })
-        .on_click(cx.listener(move |this, _, window, cx| this.activate_tab(ix, window, cx)))
-        .on_mouse_down(
-            MouseButton::Middle,
-            cx.listener(move |this, _, window, cx| this.request_close_tab(ix, window, cx)),
-        )
-        .when(settings.show_tab_close_button, |tab| {
-            tab.child(
-                div()
-                    .id(("close-tab", ix))
-                    .debug_selector(move || format!("close-tab-{ix}"))
-                    .px_1()
-                    .rounded_sm()
-                    .invisible()
-                    .group_hover("tab", |close| close.visible())
-                    .when(is_active, |close| close.visible())
-                    .hover(|close| close.bg(theme.border))
-                    .child("×")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.request_close_tab(ix, window, cx);
-                    })),
+        let indicator = theme.text;
+        let title = self.tab_title(pane, ix, cx);
+        let icon = self.pane(pane).expect("pane from caller").tabs[ix]
+            .icon
+            .clone();
+        tab(ix, title.clone(), icon.clone(), settings)
+            .group("tab")
+            .border_r_1()
+            .border_color(theme.border)
+            .when(is_active, |tab| tab.bg(theme.tab_active_background))
+            .text_color(if is_active {
+                theme.text
+            } else {
+                theme.text_muted
+            })
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.activate_tab(pane, ix, window, cx)),
             )
-        })
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(move |this, _, window, cx| {
+                    this.request_close_tab(pane, ix, window, cx)
+                }),
+            )
+            .when(settings.drag_tabs, |tab| {
+                tab.on_drag(
+                    DraggedTab {
+                        pane,
+                        ix,
+                        title,
+                        icon,
+                    },
+                    |dragged: &DraggedTab, _, _, cx| cx.new(|_| dragged.clone()),
+                )
+                .drag_over::<DraggedTab>(move |style, dragged, _, _| {
+                    // an insertion marker only makes sense inside the same tab row
+                    if dragged.pane != pane {
+                        style
+                    } else if dragged.ix < ix {
+                        // remove then insert at ix puts the tab after ix when moving right
+                        style.border_r_2().border_color(indicator)
+                    } else if dragged.ix > ix {
+                        style.border_l_2().border_color(indicator)
+                    } else {
+                        style
+                    }
+                })
+                .on_drop(cx.listener(
+                    move |this, dragged: &DraggedTab, window, cx| {
+                        this.move_tab_to_pane(dragged.pane, dragged.ix, pane, ix, window, cx);
+                    },
+                ))
+            })
+            .when(settings.show_tab_close_button, |tab| {
+                tab.child(
+                    div()
+                        .id(("close-tab", ix))
+                        .debug_selector(move || format!("close-tab-{ix}"))
+                        .px_1()
+                        .rounded_sm()
+                        .invisible()
+                        .group_hover("tab", |close| close.visible())
+                        .when(is_active, |close| close.visible())
+                        .hover(|close| close.bg(theme.border))
+                        .child("×")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.request_close_tab(pane, ix, window, cx);
+                        })),
+                )
+            })
+    }
+
+    /// "+" button of pane `pane_id`, opening a new tab there
+    fn render_new_tab_button(&self, pane: usize, cx: &Context<Self>) -> Stateful<Div> {
+        let theme = Theme::get(cx);
+        let has_profiles = Settings::get(cx).profiles.len() > 1;
+        div()
+            .id(("new-tab", pane))
+            .debug_selector(|| "new-tab".into())
+            .flex()
+            .items_center()
+            .px_3()
+            .text_color(theme.text_muted)
+            .hover(|button| button.text_color(theme.text))
+            .child("+")
+            .on_click(cx.listener(move |this, _, window, cx| {
+                let profile = Settings::get(cx).default_profile().clone();
+                this.add_profile_tab(pane, &profile, true, window, cx);
+            }))
+            .when(has_profiles, |button| {
+                button
+                    // hints that a right click picks another profile
+                    .child(
+                        div()
+                            .debug_selector(|| "profile-hint".into())
+                            .ml_0p5()
+                            .text_xs()
+                            .child("▾"),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            this.profile_menu = Some((pane, event.position));
+                            cx.notify();
+                        }),
+                    )
+            })
+    }
+
+    /// one pane: its tab row on top and its active terminal below
+    fn render_pane(&self, pane: &Pane, cx: &Context<Self>) -> AnyElement {
+        let settings = Settings::get(cx);
+        let theme = Theme::get(cx);
+        let pane_id = pane.id;
+        let show_bar = !(settings.hide_bar_for_one_tab && pane.tabs.len() == 1);
+        // fixed width tabs only take the room they need, so the button follows the last one.
+        // expanded tabs fill the row anyway, which puts the button at the right end
+        let hug_tabs = settings.new_tab_button == NewTabButton::AfterTabs && !settings.expand_tabs;
+        let tab_row = tab_row(&pane.tab_scroll)
+            .when(hug_tabs, |row| row.flex_initial())
+            .children((0..pane.tabs.len()).map(|ix| self.render_tab(pane_id, ix, cx)));
+        let new_tab = self.render_new_tab_button(pane_id, cx);
+        let bar = div()
+            .flex()
+            .flex_none()
+            .h(rems(2.))
+            .bg(theme.tab_bar_background)
+            .border_b_1()
+            .border_color(theme.border)
+            .map(|bar| match settings.new_tab_button {
+                NewTabButton::Left => bar.child(new_tab).child(tab_row),
+                NewTabButton::Right | NewTabButton::AfterTabs => bar.child(tab_row).child(new_tab),
+            });
+        let zone = self
+            .drop_zone
+            .filter(|(id, _)| *id == pane_id)
+            .map(|(_, side)| side);
+        let terminal = div()
+            .debug_selector(move || format!("pane-terminal-{pane_id}"))
+            .flex_1()
+            .min_h_0()
+            .relative()
+            // drops land on the terminal area, so dropping on the tab row only reorders
+            .on_drag_move::<DraggedTab>(cx.listener(
+                move |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
+                    this.update_drop_zone(pane_id, event.event.position, event.bounds, cx);
+                },
+            ))
+            .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
+                this.drop_tab_on_pane(pane_id, dragged.pane, dragged.ix, window, cx);
+            }))
+            .children(
+                pane.tabs
+                    .get(pane.active)
+                    .map(|tab| div().size_full().child(tab.view.clone())),
+            )
+            .when_some(zone, |terminal, side| {
+                terminal.child(drop_overlay(side, theme))
+            });
+        div()
+            .id(("pane", pane_id))
+            .relative()
+            .flex()
+            .flex_col()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    this.focus_pane(pane_id, window, cx);
+                }),
+            )
+            .when(show_bar, |pane| pane.child(bar))
+            .child(terminal)
+            .into_any_element()
+    }
+
+    /// one split: two children side by side or stacked, with a draggable divider
+    fn render_split(
+        &self,
+        axis: SplitAxis,
+        ratio: f32,
+        first: &LayoutNode,
+        second: &LayoutNode,
+        split_path: &[bool],
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let mut first_path = split_path.to_vec();
+        first_path.push(false);
+        let mut second_path = split_path.to_vec();
+        second_path.push(true);
+        let theme = Theme::get(cx);
+        let divider = div()
+            .id(format!("divider-{split_path:?}"))
+            .flex_none()
+            .bg(theme.border)
+            .map(|divider| match axis {
+                SplitAxis::Horizontal => divider
+                    .w(px(DIVIDER_WIDTH))
+                    .h_full()
+                    .cursor(CursorStyle::ResizeLeftRight),
+                SplitAxis::Vertical => divider
+                    .h(px(DIVIDER_WIDTH))
+                    .w_full()
+                    .cursor(CursorStyle::ResizeUpDown),
+            })
+            .on_drag(SplitDrag, |_, _, _, cx| cx.new(|_| SplitDrag));
+        let path = split_path.to_vec();
+        div()
+            .flex()
+            .map(|split| match axis {
+                SplitAxis::Horizontal => split.flex_row(),
+                SplitAxis::Vertical => split.flex_col(),
+            })
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            // fires for the whole split while its divider is dragged
+            .on_drag_move::<SplitDrag>(cx.listener(
+                move |this, event: &DragMoveEvent<SplitDrag>, _, cx| {
+                    let bounds = event.bounds;
+                    let position = event.event.position;
+                    let ratio = match axis {
+                        SplitAxis::Horizontal => (position.x - bounds.left()) / bounds.size.width,
+                        SplitAxis::Vertical => (position.y - bounds.top()) / bounds.size.height,
+                    };
+                    this.resize_split(&path, ratio, cx);
+                },
+            ))
+            .child(
+                div()
+                    .flex_grow(ratio)
+                    .flex_shrink(1.)
+                    .flex_basis(relative(0.))
+                    .min_w_0()
+                    .min_h_0()
+                    .child(self.render_layout(first, &first_path, cx)),
+            )
+            .child(divider)
+            .child(
+                div()
+                    .flex_grow(1. - ratio)
+                    .flex_shrink(1.)
+                    .flex_basis(relative(0.))
+                    .min_w_0()
+                    .min_h_0()
+                    .child(self.render_layout(second, &second_path, cx)),
+            )
+            .into_any_element()
+    }
+
+    /// draw the pane tree, `path` points at `node` so a split can be found again when resized
+    fn render_layout(&self, node: &LayoutNode, path: &[bool], cx: &Context<Self>) -> AnyElement {
+        match node {
+            LayoutNode::Leaf(pane) => self.render_pane(pane, cx),
+            LayoutNode::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } => self.render_split(*axis, *ratio, first, second, path, cx),
+            LayoutNode::Empty => div().into_any_element(),
+        }
     }
 
     /// profile list opened with a right click on "+", picking one opens a tab with it
     fn render_profile_menu(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        let position = self.profile_menu?;
+        let (pane, position) = self.profile_menu?;
         let theme = Theme::get(cx);
         let items = Settings::get(cx)
             .profiles
@@ -183,7 +478,7 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.profile_menu = None;
                         let profile = Settings::get(cx).profiles[ix].clone();
-                        this.add_profile_tab(&profile, true, window, cx);
+                        this.add_profile_tab(pane, &profile, true, window, cx);
                     }))
             });
         let menu = div()
@@ -239,42 +534,7 @@ impl Render for Workspace {
         let theme = Theme::get(cx);
         // ui scales in rems of the ui font size
         window.set_rem_size(px(settings.ui_font_size));
-        let show_bar = !(settings.hide_bar_for_one_tab && self.tabs.len() == 1);
-        // fixed width tabs only take the room they need, so the button follows the last one.
-        // expanded tabs fill the row anyway, which puts the button at the right end
-        let hug_tabs = settings.new_tab_button == NewTabButton::AfterTabs && !settings.expand_tabs;
-        let tab_row = tab_row(&self.tab_scroll)
-            .when(hug_tabs, |row| row.flex_initial())
-            .children((0..self.tabs.len()).map(|ix| self.render_tab(ix, cx)));
-        let has_profiles = settings.profiles.len() > 1;
-        let new_tab = div()
-            .id("new-tab")
-            .debug_selector(|| "new-tab".into())
-            .flex()
-            .items_center()
-            .px_3()
-            .text_color(theme.text_muted)
-            .hover(|button| button.text_color(theme.text))
-            .child("+")
-            .on_click(cx.listener(|this, _, window, cx| this.add_tab(window, cx)))
-            .when(has_profiles, |button| {
-                button
-                    // hints that a right click picks another profile
-                    .child(
-                        div()
-                            .debug_selector(|| "profile-hint".into())
-                            .ml_0p5()
-                            .text_xs()
-                            .child("▾"),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                            this.profile_menu = Some(event.position);
-                            cx.notify();
-                        }),
-                    )
-            });
+        let layout = self.render_layout(&self.layout, &[], cx);
         div()
             .key_context("Workspace")
             .on_action(cx.listener(Self::new_tab))
@@ -289,28 +549,7 @@ impl Render for Workspace {
             .bg(theme.terminal_background)
             .font_family(settings.ui_font_family.clone())
             .text_size(rems(TEXT_SIZE))
-            .when(show_bar, |workspace| {
-                workspace.child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .h(rems(2.))
-                        .bg(theme.tab_bar_background)
-                        .border_b_1()
-                        .border_color(theme.border)
-                        .map(|bar| match settings.new_tab_button {
-                            NewTabButton::Left => bar.child(new_tab).child(tab_row),
-                            NewTabButton::Right | NewTabButton::AfterTabs => {
-                                bar.child(tab_row).child(new_tab)
-                            }
-                        }),
-                )
-            })
-            .children(
-                self.tabs
-                    .get(self.active)
-                    .map(|tab| div().flex_1().min_h_0().child(tab.view.clone())),
-            )
+            .child(layout)
             .children(self.render_profile_menu(cx))
             .children(self.render_notifications(cx))
             .children(self.render_overlay())

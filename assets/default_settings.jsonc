@@ -41,6 +41,8 @@
   },
   // show the "×" close button on the active tab and on hovered ones, middle click still closes tabs
   "show_tab_close_button": true,
+  // drag tabs with the mouse to reorder them
+  "drag_tabs": true,
   // ask before closing a tab while a program still runs in it, like vim or a long build.
   // also asks before quitting or closing the window while any tab runs one
   "close_running_tab_warn": true,

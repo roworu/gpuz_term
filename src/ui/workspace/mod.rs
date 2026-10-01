@@ -13,8 +13,8 @@ use futures::{
     channel::mpsc::{UnboundedSender, unbounded},
 };
 use gpui::{
-    Action, App, ClipboardItem, Context, DismissEvent, Entity, EntityId, Focusable, ManagedView,
-    Pixels, Point, ScrollHandle, Subscription, Task, Window, actions, prelude::*,
+    Action, App, Bounds, ClipboardItem, Context, DismissEvent, Entity, EntityId, Focusable,
+    ManagedView, Pixels, Point, ScrollHandle, Subscription, Task, Window, actions, prelude::*,
 };
 
 use notifications::Notification;
@@ -80,15 +80,207 @@ struct Tab {
     _subscription: Subscription,
 }
 
-pub struct Workspace {
+/// pane grouping its own tabs and active terminal
+struct Pane {
+    id: usize,
     tabs: Vec<Tab>,
     active: usize,
     /// tab row scroll state, also records where each tab was laid out
     tab_scroll: ScrollHandle,
+}
+
+/// how a split lays out its two children
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum SplitAxis {
+    /// children side by side, divider is vertical
+    Horizontal,
+    /// children stacked, divider is horizontal
+    Vertical,
+}
+
+/// edge of a pane a dropped tab splits it at
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum DropSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// binary tree of panes, the leaves hold the tabs
+enum LayoutNode {
+    /// placeholder while a node is replaced, never rendered
+    Empty,
+    Leaf(Pane),
+    Split {
+        axis: SplitAxis,
+        /// share of the first child, the second gets the rest
+        ratio: f32,
+        first: Box<LayoutNode>,
+        second: Box<LayoutNode>,
+    },
+}
+
+impl LayoutNode {
+    fn pane(&self, id: usize) -> Option<&Pane> {
+        match self {
+            Self::Leaf(pane) if pane.id == id => Some(pane),
+            Self::Split { first, second, .. } => first.pane(id).or_else(|| second.pane(id)),
+            Self::Empty | Self::Leaf(_) => None,
+        }
+    }
+
+    fn pane_mut(&mut self, id: usize) -> Option<&mut Pane> {
+        match self {
+            Self::Leaf(pane) if pane.id == id => Some(pane),
+            Self::Split { first, second, .. } => first.pane_mut(id).or_else(|| second.pane_mut(id)),
+            Self::Empty | Self::Leaf(_) => None,
+        }
+    }
+
+    fn contains(&self, id: usize) -> bool {
+        match self {
+            Self::Leaf(pane) => pane.id == id,
+            Self::Split { first, second, .. } => first.contains(id) || second.contains(id),
+            Self::Empty => false,
+        }
+    }
+
+    fn first_pane_id(&self) -> Option<usize> {
+        match self {
+            Self::Leaf(pane) => Some(pane.id),
+            Self::Split { first, .. } => first.first_pane_id(),
+            Self::Empty => None,
+        }
+    }
+
+    /// pane ids in layout order
+    fn pane_ids(&self) -> Vec<usize> {
+        let mut ids = Vec::new();
+        self.collect_pane_ids(&mut ids);
+        ids
+    }
+
+    fn collect_pane_ids(&self, ids: &mut Vec<usize>) {
+        match self {
+            Self::Leaf(pane) => ids.push(pane.id),
+            Self::Split { first, second, .. } => {
+                first.collect_pane_ids(ids);
+                second.collect_pane_ids(ids);
+            }
+            Self::Empty => {}
+        }
+    }
+
+    /// split the leaf `target` at `side`, `new_pane` lands on that side
+    fn split_leaf(&mut self, target: usize, side: DropSide, new_pane: Pane) -> bool {
+        match self {
+            Self::Leaf(pane) if pane.id == target => {
+                let Self::Leaf(pane) = std::mem::replace(self, Self::Empty) else {
+                    unreachable!()
+                };
+                let (first, second) = match side {
+                    DropSide::Left | DropSide::Top => (Self::Leaf(new_pane), Self::Leaf(pane)),
+                    DropSide::Right | DropSide::Bottom => (Self::Leaf(pane), Self::Leaf(new_pane)),
+                };
+                *self = Self::Split {
+                    axis: match side {
+                        DropSide::Left | DropSide::Right => SplitAxis::Horizontal,
+                        DropSide::Top | DropSide::Bottom => SplitAxis::Vertical,
+                    },
+                    ratio: 0.5,
+                    first: Box::new(first),
+                    second: Box::new(second),
+                };
+                true
+            }
+            Self::Split { first, second, .. } => {
+                if first.contains(target) {
+                    first.split_leaf(target, side, new_pane)
+                } else {
+                    second.split_leaf(target, side, new_pane)
+                }
+            }
+            Self::Empty | Self::Leaf(_) => false,
+        }
+    }
+
+    /// remove the leaf `id`, a split that loses a direct leaf is replaced by its other side
+    fn remove_leaf(&mut self, id: usize) -> Option<Pane> {
+        match self {
+            Self::Leaf(pane) if pane.id == id => {
+                let Self::Leaf(pane) = std::mem::replace(self, Self::Empty) else {
+                    unreachable!()
+                };
+                Some(pane)
+            }
+            Self::Split { first, second, .. } => {
+                let (found, other) = if first.contains(id) {
+                    (first, second)
+                } else {
+                    (second, first)
+                };
+                let pane = found.remove_leaf(id)?;
+                // a nested split already collapsed itself, only a direct leaf leaves a hole
+                if matches!(**found, Self::Empty) {
+                    *self = std::mem::replace(other.as_mut(), Self::Empty);
+                }
+                Some(pane)
+            }
+            Self::Empty | Self::Leaf(_) => None,
+        }
+    }
+}
+
+/// side of `bounds` the pointer at `position` is closest to
+fn drop_side(bounds: Bounds<Pixels>, position: Point<Pixels>) -> DropSide {
+    let dx = (position.x - bounds.left()) / bounds.size.width;
+    let dy = (position.y - bounds.top()) / bounds.size.height;
+    if (dx - 0.5).abs() > (dy - 0.5).abs() {
+        if dx < 0.5 {
+            DropSide::Left
+        } else {
+            DropSide::Right
+        }
+    } else if dy < 0.5 {
+        DropSide::Top
+    } else {
+        DropSide::Bottom
+    }
+}
+
+/// share of a split the smaller side keeps, so a divider cannot be dragged fully away
+const MIN_SPLIT_RATIO: f32 = 0.1;
+
+/// node at `path`, false picks the first child and true the second
+fn layout_at_mut<'a>(node: &'a mut LayoutNode, path: &[bool]) -> Option<&'a mut LayoutNode> {
+    match path.split_first() {
+        None => Some(node),
+        Some((&first, rest)) => {
+            let LayoutNode::Split {
+                first: a,
+                second: b,
+                ..
+            } = node
+            else {
+                return None;
+            };
+            layout_at_mut(if first { b } else { a }, rest)
+        }
+    }
+}
+
+pub struct Workspace {
+    layout: LayoutNode,
+    /// pane with focus, its active tab is the active tab of the window
+    focused: usize,
+    next_pane_id: usize,
+    /// pane edge a dragged tab would split at, none while no tab drags over a pane
+    drop_zone: Option<(usize, DropSide)>,
     /// built from `window_title` blocks for the active tab
     window_title: String,
-    /// where the profile menu was opened, none while it is closed
-    profile_menu: Option<Point<Pixels>>,
+    /// pane and place the profile menu was opened at, none while it is closed
+    profile_menu: Option<(usize, Point<Pixels>)>,
     /// open command palette, none while it is closed
     palette: Option<Entity<CommandPalette>>,
     /// open about page, none while it is closed
@@ -161,9 +353,15 @@ impl Workspace {
             }
         });
         let mut this = Self {
-            tabs: Vec::new(),
-            active: 0,
-            tab_scroll: ScrollHandle::new(),
+            layout: LayoutNode::Leaf(Pane {
+                id: 0,
+                tabs: Vec::new(),
+                active: 0,
+                tab_scroll: ScrollHandle::new(),
+            }),
+            focused: 0,
+            next_pane_id: 1,
+            drop_zone: None,
             window_title: String::new(),
             profile_menu: None,
             palette: None,
@@ -192,14 +390,61 @@ impl Workspace {
         this
     }
 
-    fn add_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let profile = Settings::get(cx).default_profile().clone();
-        self.add_profile_tab(&profile, true, window, cx);
+    fn pane(&self, id: usize) -> Option<&Pane> {
+        self.layout.pane(id)
     }
 
-    /// open a tab with `profile`, switching to it when `activate`
+    fn pane_mut(&mut self, id: usize) -> Option<&mut Pane> {
+        self.layout.pane_mut(id)
+    }
+
+    fn focused_pane(&self) -> &Pane {
+        self.pane(self.focused)
+            .expect("focused pane is in the layout")
+    }
+
+    /// pane and tab index of the tab with this view id
+    fn find_id(&self, id: EntityId) -> Option<(usize, usize)> {
+        for pane_id in self.layout.pane_ids() {
+            let pane = self.pane(pane_id).expect("pane id comes from the layout");
+            if let Some(ix) = pane.tabs.iter().position(|tab| tab.view.entity_id() == id) {
+                return Some((pane_id, ix));
+            }
+        }
+        None
+    }
+
+    fn find_view(&self, view: &Entity<TerminalView>) -> Option<(usize, usize)> {
+        self.find_id(view.entity_id())
+    }
+
+    /// tab with this view, wherever it lives
+    fn tab_mut(&mut self, view: &Entity<TerminalView>) -> Option<&mut Tab> {
+        let (pane_id, ix) = self.find_view(view)?;
+        Some(&mut self.pane_mut(pane_id)?.tabs[ix])
+    }
+
+    /// give focus to a pane, focusing its active tab
+    fn focus_pane(&mut self, pane_id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.focused = pane_id;
+        if let Some(pane) = self.pane(pane_id)
+            && let Some(tab) = pane.tabs.get(pane.active)
+        {
+            tab.view.focus_handle(cx).focus(window, cx);
+        }
+        self.refresh_titles();
+        cx.notify();
+    }
+
+    fn add_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let profile = Settings::get(cx).default_profile().clone();
+        self.add_profile_tab(self.focused, &profile, true, window, cx);
+    }
+
+    /// open a tab with `profile` in pane `pane_id`, switching to it when `activate`
     fn add_profile_tab(
         &mut self,
+        pane_id: usize,
         profile: &Profile,
         activate: bool,
         window: &mut Window,
@@ -227,8 +472,8 @@ impl Workspace {
                 // shell exited, so close its tab
                 // TODO: do we need it at all? probably we need a setting, if to keep exited tab..
                 Event::CloseTerminal => {
-                    if let Some(ix) = this.tabs.iter().position(|tab| tab.view == view) {
-                        this.close_tab_at(ix, window, cx);
+                    if let Some((pane_id, ix)) = this.find_view(&view) {
+                        this.close_tab_at(pane_id, ix, window, cx);
                     }
                 }
                 // a new program often starts by printing something
@@ -239,7 +484,10 @@ impl Workspace {
             }
         });
 
-        self.tabs.push(Tab {
+        let Some(pane) = self.pane_mut(pane_id) else {
+            return;
+        };
+        pane.tabs.push(Tab {
             view,
             title: String::new(),
             icon: profile
@@ -252,8 +500,9 @@ impl Workspace {
             pending_input: Vec::new(),
             _subscription: subscription,
         });
+        let ix = pane.tabs.len() - 1;
         if activate {
-            self.activate_tab(self.tabs.len() - 1, window, cx);
+            self.activate_tab(pane_id, ix, window, cx);
         } else {
             self.refresh_titles();
             cx.notify();
@@ -267,7 +516,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.view == view) else {
+        let Some(tab) = self.tab_mut(view) else {
             return;
         };
         if tab.ready {
@@ -282,7 +531,7 @@ impl Workspace {
 
     /// the shell stopped printing, so it is at a prompt and can take typed input
     fn mark_ready(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
-        let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.view == view) else {
+        let Some(tab) = self.tab_mut(view) else {
             return;
         };
         tab.ready = true;
@@ -294,14 +543,18 @@ impl Workspace {
         terminal.update(cx, |terminal, _| terminal.input(input));
     }
 
-    /// terminal of the tab at `ix`
-    fn terminal_at(&self, ix: usize, cx: &App) -> Entity<Terminal> {
-        self.tabs[ix].view.read(cx).terminal().clone()
+    /// terminal of the tab at `ix` in pane `pane_id`
+    fn terminal_at(&self, pane_id: usize, ix: usize, cx: &App) -> Entity<Terminal> {
+        self.pane(pane_id).expect("pane from caller").tabs[ix]
+            .view
+            .read(cx)
+            .terminal()
+            .clone()
     }
 
-    /// write input to the tab at `ix`, holding it back until a fresh shell is ready
-    fn input_to(&mut self, ix: usize, input: Vec<u8>, cx: &mut Context<Self>) {
-        let tab = &mut self.tabs[ix];
+    /// write input to the tab at `ix` in pane `pane_id`, holding it back until a fresh shell is ready
+    fn input_to(&mut self, pane_id: usize, ix: usize, input: Vec<u8>, cx: &mut Context<Self>) {
+        let tab = &mut self.pane_mut(pane_id).expect("pane from caller").tabs[ix];
         if tab.ready {
             let terminal = tab.view.read(cx).terminal().clone();
             terminal.update(cx, |terminal, _| terminal.input(input));
@@ -311,22 +564,195 @@ impl Workspace {
         }
     }
 
-    fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn activate_tab(
+        &mut self,
+        pane_id: usize,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // focus leaves the close dialog, and a dialog without focus could not be answered
         if self.confirm_close.take().is_some() {
             self._overlay_subscriptions.clear();
         }
-        self.active = ix;
+        let view = {
+            let Some(pane) = self.pane_mut(pane_id) else {
+                return;
+            };
+            pane.active = ix;
+            pane.tab_scroll.scroll_to_item(ix);
+            pane.tabs[ix].view.clone()
+        };
+        self.focused = pane_id;
         // window title follows the active tab, and tab numbers shift after add or close
         self.refresh_titles();
-        self.tab_scroll.scroll_to_item(ix);
-        self.tabs[ix].view.focus_handle(cx).focus(window, cx);
+        view.focus_handle(cx).focus(window, cx);
         cx.notify();
     }
 
-    /// open a tab with the named profile, notifying when there is none
+    /// move a tab within pane `pane_id`, keeping the active tab on its view
+    fn move_tab(&mut self, pane_id: usize, from: usize, to: usize, cx: &mut Context<Self>) {
+        {
+            let Some(pane) = self.pane_mut(pane_id) else {
+                return;
+            };
+            if from == to || from >= pane.tabs.len() || to >= pane.tabs.len() {
+                return;
+            }
+            let tab = pane.tabs.remove(from);
+            pane.tabs.insert(to, tab);
+            // active follows its view: it moves with the tab, or shifts when another lands across it
+            let active = &mut pane.active;
+            if *active == from {
+                *active = to;
+            } else if from < *active && *active <= to {
+                *active -= 1;
+            } else if *active < from && to <= *active {
+                *active += 1;
+            }
+        }
+        // titles show the tab number, which changed for the shifted tabs
+        self.refresh_titles();
+        cx.notify();
+    }
+
+    /// take the tab at `ix` out of pane `pane_id`, the bool is true when the pane emptied
+    fn take_tab(&mut self, pane_id: usize, ix: usize) -> Option<(Tab, bool)> {
+        let pane = self.pane_mut(pane_id)?;
+        if ix >= pane.tabs.len() {
+            return None;
+        }
+        let tab = pane.tabs.remove(ix);
+        // the active tab follows its view, landing on the tab on its left when it closes
+        // TODO: should be configurable
+        pane.active = if ix < pane.active || (ix == pane.active && ix > 0) {
+            pane.active - 1
+        } else {
+            pane.active.min(pane.tabs.len().saturating_sub(1))
+        };
+        Some((tab, pane.tabs.is_empty()))
+    }
+
+    /// update the split edge a dragged tab would drop at
+    fn update_drop_zone(
+        &mut self,
+        pane_id: usize,
+        position: Point<Pixels>,
+        bounds: Bounds<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        // some pane always contains the pointer, so a pane only ever clears its own zone
+        if bounds.contains(&position) {
+            let zone = Some((pane_id, drop_side(bounds, position)));
+            if self.drop_zone != zone {
+                self.drop_zone = zone;
+                cx.notify();
+            }
+        } else if self.drop_zone.is_some_and(|(id, _)| id == pane_id) {
+            self.drop_zone = None;
+            cx.notify();
+        }
+    }
+
+    /// drop the tab dragged from `src_pane` onto pane `pane_id`, splitting it
+    fn drop_tab_on_pane(
+        &mut self,
+        pane_id: usize,
+        src_pane: usize,
+        src_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((zone_pane, side)) = self.drop_zone.take() else {
+            return;
+        };
+        if zone_pane != pane_id {
+            return;
+        }
+        self.split_with_tab(src_pane, src_ix, pane_id, side, window, cx);
+    }
+
+    /// move the tab at `src_ix` of `src_pane` into a new pane split off `target` at `side`
+    fn split_with_tab(
+        &mut self,
+        src_pane: usize,
+        src_ix: usize,
+        target: usize,
+        side: DropSide,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((tab, empty)) = self.take_tab(src_pane, src_ix) else {
+            return;
+        };
+        if empty && src_pane == target {
+            // the pane stays, so it needs a shell to show in place of the moved tab
+            let profile = Settings::get(cx).default_profile().clone();
+            self.add_profile_tab(src_pane, &profile, false, window, cx);
+        } else if empty {
+            self.layout.remove_leaf(src_pane);
+            if self.focused == src_pane {
+                self.focused = self.layout.first_pane_id().unwrap_or(target);
+            }
+        }
+        let new_pane = Pane {
+            id: self.next_pane_id,
+            tabs: vec![tab],
+            active: 0,
+            tab_scroll: ScrollHandle::new(),
+        };
+        let new_id = new_pane.id;
+        self.next_pane_id += 1;
+        self.layout.split_leaf(target, side, new_pane);
+        self.focus_pane(new_id, window, cx);
+    }
+
+    /// move the tab at `src_ix` of `src_pane` to `dst_ix` of `dst_pane`
+    fn move_tab_to_pane(
+        &mut self,
+        src_pane: usize,
+        src_ix: usize,
+        dst_pane: usize,
+        dst_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if src_pane == dst_pane {
+            self.move_tab(src_pane, src_ix, dst_ix, cx);
+            return;
+        }
+        let Some((tab, empty)) = self.take_tab(src_pane, src_ix) else {
+            return;
+        };
+        if empty {
+            self.layout.remove_leaf(src_pane);
+            if self.focused == src_pane {
+                self.focused = self.layout.first_pane_id().unwrap_or(dst_pane);
+            }
+        }
+        let Some(dst) = self.pane_mut(dst_pane) else {
+            return;
+        };
+        let ix = dst_ix.min(dst.tabs.len());
+        dst.tabs.insert(ix, tab);
+        dst.active = ix;
+        self.focus_pane(dst_pane, window, cx);
+    }
+
+    /// set the ratio of the split at `path`
+    fn resize_split(&mut self, path: &[bool], ratio: f32, cx: &mut Context<Self>) {
+        let Some(LayoutNode::Split { ratio: split, .. }) = layout_at_mut(&mut self.layout, path)
+        else {
+            return;
+        };
+        *split = ratio.clamp(MIN_SPLIT_RATIO, 1.0 - MIN_SPLIT_RATIO);
+        cx.notify();
+    }
+
+    /// open a tab with the named profile in pane `pane_id`, notifying when there is none
     fn add_named_profile_tab(
         &mut self,
+        pane_id: usize,
         name: &str,
         activate: bool,
         window: &mut Window,
@@ -337,35 +763,46 @@ impl Workspace {
             self.show_notification(format!("no profile named {name:?}"), None, cx);
             return false;
         };
-        self.add_profile_tab(&profile, activate, window, cx);
+        self.add_profile_tab(pane_id, &profile, activate, window, cx);
         true
     }
 
-    /// name of the program running in the tab at `ix`, none when only the shell is there
-    fn running_program(&self, ix: usize, cx: &App) -> Option<String> {
-        let shell_pid = self.terminal_at(ix, cx).read(cx).shell_pid;
+    /// name of the program running in the tab at `ix` of pane `pane_id`, none when only the shell is there
+    fn running_program(&self, pane_id: usize, ix: usize, cx: &App) -> Option<String> {
+        let shell_pid = self.terminal_at(pane_id, ix, cx).read(cx).shell_pid;
         foreground_process(shell_pid)
             .filter(|process| process.pid != shell_pid)
             .map(|process| process.name)
     }
 
-    /// close the tab at `ix`, asking first when a program still runs in it
-    fn request_close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// close the tab at `ix` of `pane_id`, asking first when a program still runs in it
+    fn request_close_tab(
+        &mut self,
+        pane_id: usize,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // actions run before the dialog sees keys, so a second close must not replace the dialog
         if self.confirm_close.is_some() {
             return;
         }
         let warn = Settings::get(cx).close_running_tab_warn;
-        let Some(program) = warn.then(|| self.running_program(ix, cx)).flatten() else {
-            self.close_tab_at(ix, window, cx);
+        let Some(program) = warn
+            .then(|| self.running_program(pane_id, ix, cx))
+            .flatten()
+        else {
+            self.close_tab_at(pane_id, ix, window, cx);
             return;
         };
         let message = format!(
             "\"{program}\" is still running in tab {} \"{}\"",
             ix + 1,
-            self.tab_title(ix, cx)
+            self.tab_title(pane_id, ix, cx)
         );
-        let view = self.tabs[ix].view.clone();
+        let view = self.pane(pane_id).expect("pane from caller").tabs[ix]
+            .view
+            .clone();
         self.open_confirm(
             message,
             CloseTarget::Tabs(vec![view.entity_id()]),
@@ -374,9 +811,10 @@ impl Workspace {
         );
     }
 
-    /// close every tab on one side of `ix`, asking once when programs still run in them
+    /// close every tab on one side of `ix` in `pane_id`, asking once when programs still run in them
     fn request_close_tabs_side(
         &mut self,
+        pane_id: usize,
         ix: usize,
         right: bool,
         window: &mut Window,
@@ -385,21 +823,22 @@ impl Workspace {
         if self.confirm_close.is_some() {
             return;
         }
-        let range = if right {
-            ix + 1..self.tabs.len()
-        } else {
-            0..ix
-        };
+        let count = self.pane(pane_id).expect("pane from caller").tabs.len();
+        let range = if right { ix + 1..count } else { 0..ix };
         if range.is_empty() {
             return;
         }
         let ids: Vec<EntityId> = range
             .clone()
-            .map(|ix| self.tabs[ix].view.entity_id())
+            .map(|ix| {
+                self.pane(pane_id).expect("pane from caller").tabs[ix]
+                    .view
+                    .entity_id()
+            })
             .collect();
         let names: Vec<String> = if Settings::get(cx).close_running_tab_warn {
             range
-                .filter_map(|ix| self.running_program(ix, cx))
+                .filter_map(|ix| self.running_program(pane_id, ix, cx))
                 .collect()
         } else {
             Vec::new()
@@ -419,8 +858,8 @@ impl Workspace {
     /// close the tabs with these views, skipping any that are already gone
     fn close_tabs(&mut self, ids: &[EntityId], window: &mut Window, cx: &mut Context<Self>) {
         for id in ids {
-            if let Some(ix) = self.tabs.iter().position(|tab| tab.view.entity_id() == *id) {
-                self.close_tab_at(ix, window, cx);
+            if let Some((pane_id, ix)) = self.find_id(*id) {
+                self.close_tab_at(pane_id, ix, window, cx);
             }
         }
     }
@@ -449,9 +888,19 @@ impl Workspace {
         if !Settings::get(cx).close_running_tab_warn {
             return false;
         }
-        let names: Vec<String> = (0..self.tabs.len())
-            .filter_map(|ix| self.running_program(ix, cx))
-            .collect();
+        let mut names: Vec<String> = Vec::new();
+        for pane_id in self.layout.pane_ids() {
+            let count = self
+                .pane(pane_id)
+                .expect("pane id comes from the layout")
+                .tabs
+                .len();
+            for ix in 0..count {
+                if let Some(program) = self.running_program(pane_id, ix, cx) {
+                    names.push(program);
+                }
+            }
+        }
         if names.is_empty() {
             return false;
         }
@@ -488,46 +937,80 @@ impl Workspace {
         cx.quit();
     }
 
-    fn close_tab_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let closed = self.tabs.remove(ix).view.entity_id();
-        if self.tabs.is_empty() {
-            self.quit(cx);
+    fn close_tab_at(
+        &mut self,
+        pane_id: usize,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let old_active = self.pane(pane_id).map(|pane| pane.active);
+        let Some((closed_tab, empty)) = self.take_tab(pane_id, ix) else {
             return;
-        }
+        };
+        let closed = closed_tab.view.entity_id();
         // the shell may exit while its tab is asked about, leaving nothing to confirm.
         // a batch keeps its dialog until every tab it asks about is gone
-        if self.confirm_close.as_ref().is_some_and(|confirm| {
-            let target = confirm.read(cx).target.clone();
-            target.contains(closed)
-                && !self
-                    .tabs
-                    .iter()
-                    .any(|tab| target.contains(tab.view.entity_id()))
-        }) {
+        let target = self
+            .confirm_close
+            .as_ref()
+            .map(|c| c.read(cx).target.clone());
+        if let Some(target) = target
+            && target.contains(closed)
+            && !self.any_target_present(&target)
+        {
             self.close_overlay(window, cx);
         }
-        // closing active tab activates one on its left
-        // TODO: should be configurable
-        let active = if ix < self.active || (ix == self.active && ix > 0) {
-            self.active - 1
-        } else {
-            self.active.min(self.tabs.len() - 1)
-        };
+        if empty {
+            let before = self.layout.pane_ids();
+            let at = before.iter().position(|id| *id == pane_id);
+            self.layout.remove_leaf(pane_id);
+            if self.layout.first_pane_id().is_none() {
+                self.quit(cx);
+                return;
+            }
+            if self.focused == pane_id {
+                // focus the pane that takes the removed one's place, not the first pane
+                let after = self.layout.pane_ids();
+                self.focus_pane(after[at.unwrap_or(0).min(after.len() - 1)], window, cx);
+            } else {
+                self.refresh_titles();
+                cx.notify();
+            }
+            return;
+        }
+        let active = self.pane(pane_id).expect("pane from take_tab").active;
         // a dialog that still asks about a remaining tab keeps focus and stays up
-        if self.confirm_close.is_some() && active == self.active {
+        if self.confirm_close.is_some() && Some(active) == old_active {
             self.refresh_titles();
             cx.notify();
+        } else if self.focused == pane_id {
+            self.activate_tab(pane_id, active, window, cx);
         } else {
-            self.activate_tab(active, window, cx);
+            self.refresh_titles();
+            cx.notify();
         }
+    }
+
+    /// true when some tab still in the layout is part of `target`
+    fn any_target_present(&self, target: &CloseTarget) -> bool {
+        self.layout.pane_ids().into_iter().any(|pane_id| {
+            let pane = self.pane(pane_id).expect("pane id comes from the layout");
+            pane.tabs
+                .iter()
+                .any(|tab| target.contains(tab.view.entity_id()))
+        })
     }
 
     /// read theme files again and recolor the ui and every terminal
     fn reload_themes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         Theme::apply(window.appearance(), cx);
-        for tab in &self.tabs {
-            let terminal = tab.view.read(cx).terminal().clone();
-            terminal.update(cx, |terminal, _| terminal.apply_theme(window.appearance()));
+        for pane_id in self.layout.pane_ids() {
+            let pane = self.pane(pane_id).expect("pane id comes from the layout");
+            for tab in &pane.tabs {
+                let terminal = tab.view.read(cx).terminal().clone();
+                terminal.update(cx, |terminal, _| terminal.apply_theme(window.appearance()));
+            }
         }
         // terminal views may be cached, force redraw everything with new colors
         window.refresh();
@@ -560,18 +1043,17 @@ impl Workspace {
 
     /// run command actions in order against the active tab, or the last background tab
     fn run_command(&mut self, command: &Command, window: &mut Window, cx: &mut Context<Self>) {
-        // background tab later actions act on, the active tab when none
-        let mut target: Option<Entity<TerminalView>> = None;
+        // tab later actions act on, the active tab of the focused pane when none
+        let mut target: Option<(usize, usize)> = None;
         for action in &command.actions {
             // closing the last tab quits, nothing is left to act on
-            if self.tabs.is_empty() {
+            if self.layout.first_pane_id().is_none() {
                 return;
             }
-            // a closed background tab falls back to the active one
-            let ix = target
-                .as_ref()
-                .and_then(|view| self.tabs.iter().position(|tab| &tab.view == view))
-                .unwrap_or(self.active);
+            // a closed background tab falls back to the active tab of the focused pane
+            let (pane, ix) = target
+                .filter(|(pane, ix)| self.pane(*pane).is_some_and(|pane| *ix < pane.tabs.len()))
+                .unwrap_or_else(|| (self.focused, self.focused_pane().active));
             match action {
                 CommandAction::About => {
                     let about = cx.new(About::new);
@@ -599,30 +1081,49 @@ impl Workspace {
                     target = None;
                 }
                 CommandAction::NewTabWithProfile(name) => {
-                    if self.add_named_profile_tab(name, true, window, cx) {
+                    if self.add_named_profile_tab(self.focused, name, true, window, cx) {
                         target = None;
                     }
                 }
                 CommandAction::NewBackgroundTab => {
                     let profile = Settings::get(cx).default_profile().clone();
-                    self.add_profile_tab(&profile, false, window, cx);
-                    target = self.tabs.last().map(|tab| tab.view.clone());
+                    self.add_profile_tab(self.focused, &profile, false, window, cx);
+                    let pane = self.focused;
+                    target = self
+                        .pane(pane)
+                        .map(|p| (pane, p.tabs.len().saturating_sub(1)));
                 }
                 CommandAction::NewBackgroundTabWithProfile(name) => {
-                    if self.add_named_profile_tab(name, false, window, cx) {
-                        target = self.tabs.last().map(|tab| tab.view.clone());
+                    if self.add_named_profile_tab(self.focused, name, false, window, cx) {
+                        let pane = self.focused;
+                        target = self
+                            .pane(pane)
+                            .map(|p| (pane, p.tabs.len().saturating_sub(1)));
                     }
                 }
                 CommandAction::CloseTab => {
-                    self.request_close_tab(ix, window, cx);
+                    self.request_close_tab(pane, ix, window, cx);
                     target = None;
                 }
                 CommandAction::CloseTabsToRight => {
-                    self.request_close_tabs_side(ix, true, window, cx);
+                    self.request_close_tabs_side(pane, ix, true, window, cx);
                     target = None;
                 }
                 CommandAction::CloseTabsToLeft => {
-                    self.request_close_tabs_side(ix, false, window, cx);
+                    self.request_close_tabs_side(pane, ix, false, window, cx);
+                    target = None;
+                }
+                CommandAction::SplitLeft
+                | CommandAction::SplitRight
+                | CommandAction::SplitUp
+                | CommandAction::SplitDown => {
+                    let side = match action {
+                        CommandAction::SplitLeft => DropSide::Left,
+                        CommandAction::SplitRight => DropSide::Right,
+                        CommandAction::SplitUp => DropSide::Top,
+                        _ => DropSide::Bottom,
+                    };
+                    self.split_with_tab(pane, ix, pane, side, window, cx);
                     target = None;
                 }
                 CommandAction::NextTab => {
@@ -630,21 +1131,23 @@ impl Workspace {
                     target = None;
                 }
                 CommandAction::PrevTab => {
-                    let ix = (self.active + self.tabs.len() - 1) % self.tabs.len();
-                    self.activate_tab(ix, window, cx);
+                    let count = self.focused_pane().tabs.len();
+                    let ix = (self.focused_pane().active + count - 1) % count;
+                    self.activate_tab(self.focused, ix, window, cx);
                     target = None;
                 }
                 CommandAction::ActivateTab(number) => {
+                    let count = self.focused_pane().tabs.len();
                     if let Some(ix) = number.checked_sub(1)
-                        && ix < self.tabs.len()
+                        && ix < count
                     {
-                        self.activate_tab(ix, window, cx);
+                        self.activate_tab(self.focused, ix, window, cx);
                         target = None;
                     }
                 }
                 CommandAction::PickTab => self.open_tab_picker(window, cx),
                 CommandAction::Copy => {
-                    let selection = self.terminal_at(ix, cx).read(cx).selection_text();
+                    let selection = self.terminal_at(pane, ix, cx).read(cx).selection_text();
                     let text = match selection {
                         Some(text) => {
                             cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -656,27 +1159,31 @@ impl Workspace {
                 }
                 CommandAction::Paste => {
                     if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                        self.terminal_at(ix, cx)
+                        self.terminal_at(pane, ix, cx)
                             .update(cx, |terminal, _| terminal.paste(&text));
                     }
                 }
                 CommandAction::ScrollUp(lines) => self
-                    .terminal_at(ix, cx)
+                    .terminal_at(pane, ix, cx)
                     .update(cx, |terminal, _| terminal.scroll(*lines)),
                 CommandAction::ScrollDown(lines) => self
-                    .terminal_at(ix, cx)
+                    .terminal_at(pane, ix, cx)
                     .update(cx, |terminal, _| terminal.scroll(-*lines)),
-                CommandAction::ScrollTop => self.terminal_at(ix, cx).update(cx, |terminal, _| {
-                    terminal.scroll_to(terminal.history_size())
-                }),
+                CommandAction::ScrollTop => {
+                    self.terminal_at(pane, ix, cx).update(cx, |terminal, _| {
+                        terminal.scroll_to(terminal.history_size())
+                    })
+                }
                 CommandAction::ScrollBottom => self
-                    .terminal_at(ix, cx)
+                    .terminal_at(pane, ix, cx)
                     .update(cx, |terminal, _| terminal.scroll_to(0)),
                 CommandAction::Quit => self.request_quit(window, cx),
-                CommandAction::Type(text) => self.input_to(ix, text.clone().into_bytes(), cx),
+                CommandAction::Type(text) => self.input_to(pane, ix, text.clone().into_bytes(), cx),
                 CommandAction::Notify(text) => self.show_notification(text.clone(), None, cx),
                 CommandAction::NotifyWhenDone(text) => {
-                    let view = self.tabs[ix].view.clone();
+                    let view = self.pane(pane).expect("pane from target").tabs[ix]
+                        .view
+                        .clone();
                     self.notify_when_done(view, text.clone(), cx);
                 }
             }
@@ -707,7 +1214,9 @@ impl Workspace {
         self.about = None;
         self.confirm_close = None;
         self._overlay_subscriptions.clear();
-        if let Some(tab) = self.tabs.get(self.active) {
+        if let Some(pane) = self.pane(self.focused)
+            && let Some(tab) = pane.tabs.get(pane.active)
+        {
             tab.view.focus_handle(cx).focus(window, cx);
         }
         cx.notify();
@@ -749,9 +1258,10 @@ impl Workspace {
 
     /// palette listing the open tabs, picking one switches to it
     fn open_tab_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let tabs = (0..self.tabs.len())
+        let pane = self.focused;
+        let tabs = (0..self.focused_pane().tabs.len())
             .map(|ix| Command {
-                name: self.tab_title(ix, cx),
+                name: self.tab_title(pane, ix, cx),
                 category: Some((ix + 1).to_string()),
                 pinned: false,
                 actions: vec![CommandAction::ActivateTab(ix + 1)],
@@ -784,27 +1294,32 @@ impl Workspace {
 
     fn title_inputs(&self, cx: &App) -> TitleSnapshot {
         let settings = Settings::get(cx);
-        let inputs = self
-            .tabs
-            .iter()
-            .enumerate()
-            .map(|(ix, tab)| {
+        let mut inputs = Vec::new();
+        let mut active = 0;
+        for pane_id in self.layout.pane_ids() {
+            let pane = self.pane(pane_id).expect("pane id comes from the layout");
+            for (ix, tab) in pane.tabs.iter().enumerate() {
+                if pane.id == self.focused && ix == pane.active {
+                    active = inputs.len();
+                }
                 let terminal = tab.view.read(cx).terminal().read(cx);
-                let inputs = TitleInputs {
-                    number: ix + 1,
-                    shell_pid: terminal.shell_pid,
-                    title: terminal.title(&settings.default_title),
-                    profile_icon: tab.profile_icon.clone(),
-                };
-                (tab.view.entity_id(), inputs)
-            })
-            .collect();
+                inputs.push((
+                    tab.view.entity_id(),
+                    TitleInputs {
+                        number: ix + 1,
+                        shell_pid: terminal.shell_pid,
+                        title: terminal.title(&settings.default_title),
+                        profile_icon: tab.profile_icon.clone(),
+                    },
+                ));
+            }
+        }
         (
             settings.tab_title.clone(),
             settings.window_title.clone(),
             settings.tab_icon.clone(),
             TabIcons::get(cx).clone(),
-            self.active,
+            active,
             inputs,
         )
     }
@@ -829,9 +1344,14 @@ impl Workspace {
         let mut changed = false;
         for (id, title, icon) in titles {
             // tabs closed while building are skipped
-            if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.view.entity_id() == id)
-                && (tab.title != title || tab.icon != icon)
-            {
+            let Some((pane_id, ix)) = self.find_id(id) else {
+                continue;
+            };
+            let tab = &mut self
+                .pane_mut(pane_id)
+                .expect("pane id comes from the layout")
+                .tabs[ix];
+            if tab.title != title || tab.icon != icon {
                 tab.title = title;
                 tab.icon = icon;
                 changed = true;
@@ -847,12 +1367,17 @@ impl Workspace {
     }
 
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.request_close_tab(self.active, window, cx);
+        let ix = self.focused_pane().active;
+        let pane = self.focused;
+        self.request_close_tab(pane, ix, window, cx);
     }
 
     fn next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
         // wraps from the last tab back to the first
-        self.activate_tab((self.active + 1) % self.tabs.len(), window, cx);
+        let count = self.focused_pane().tabs.len();
+        let ix = (self.focused_pane().active + 1) % count;
+        let pane = self.focused;
+        self.activate_tab(pane, ix, window, cx);
     }
 
     fn activate_tab_action(
@@ -861,8 +1386,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if action.0 < self.tabs.len() {
-            self.activate_tab(action.0, window, cx);
+        let count = self.focused_pane().tabs.len();
+        let pane = self.focused;
+        if action.0 < count {
+            self.activate_tab(pane, action.0, window, cx);
         }
     }
 }
@@ -943,7 +1470,7 @@ mod tests {
             cx.run_until_parked();
         }
         assert_eq!(
-            ws.update(cx, |ws, _| ws.tabs.len()),
+            ws.update(cx, |ws, _| ws.focused_pane().tabs.len()),
             tabs,
             "failed to spawn shells"
         );
@@ -956,14 +1483,19 @@ mod tests {
 
     fn views(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<EntityId> {
         ws.update(cx, |ws, _| {
-            ws.tabs.iter().map(|t| t.view.entity_id()).collect()
+            ws.focused_pane()
+                .tabs
+                .iter()
+                .map(|t| t.view.entity_id())
+                .collect()
         })
     }
 
     /// active tab index, checking that focus is on it
     fn current(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> usize {
         ws.update_in(cx, |ws, window, cx| {
-            let focused: Vec<usize> = ws
+            let state = ws.focused_pane();
+            let focused: Vec<usize> = state
                 .tabs
                 .iter()
                 .enumerate()
@@ -972,10 +1504,10 @@ mod tests {
                 .collect();
             assert_eq!(
                 focused,
-                vec![ws.active],
+                vec![state.active],
                 "focus does not follow the active tab"
             );
-            ws.active
+            state.active
         })
     }
 
@@ -1022,13 +1554,316 @@ mod tests {
     fn activate_tab_after_close_uses_shifted_indexes(cx: &mut TestAppContext) {
         let (ws, cx) = open(cx, 4);
         let old = views(&ws, cx);
-        ws.update_in(cx, |ws, window, cx| ws.close_tab_at(1, window, cx));
+        ws.update_in(cx, |ws, window, cx| ws.close_tab_at(0, 1, window, cx));
         cx.run_until_parked();
         // index 1 is now the old third tab, index 3 is gone
         assert_eq!(activate(&ws, cx, 1), 1);
         assert_eq!(views(&ws, cx)[1], old[2]);
         assert_eq!(activate(&ws, cx, 3), 1);
         assert_eq!(activate(&ws, cx, 2), 2);
+    }
+
+    #[gpui::test]
+    fn move_tab_reorders_and_keeps_the_active_tab(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 4);
+        let old = views(&ws, cx);
+        // the last tab is active, moving another tab before it keeps that one active
+        ws.update(cx, |ws, cx| ws.move_tab(0, 0, 2, cx));
+        cx.run_until_parked();
+        assert_eq!(views(&ws, cx), vec![old[1], old[2], old[0], old[3]]);
+        assert_eq!(current(&ws, cx), 3);
+        // moving the active tab makes it follow its new position
+        activate(&ws, cx, 2);
+        ws.update(cx, |ws, cx| ws.move_tab(0, 2, 0, cx));
+        cx.run_until_parked();
+        assert_eq!(views(&ws, cx), vec![old[0], old[1], old[2], old[3]]);
+        assert_eq!(current(&ws, cx), 0);
+    }
+
+    #[gpui::test]
+    fn move_tab_ignores_out_of_range_indexes(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 3);
+        let before = views(&ws, cx);
+        ws.update(cx, |ws, cx| ws.move_tab(0, 0, 0, cx));
+        ws.update(cx, |ws, cx| ws.move_tab(0, 3, 1, cx));
+        ws.update(cx, |ws, cx| ws.move_tab(0, 1, 3, cx));
+        cx.run_until_parked();
+        assert_eq!(views(&ws, cx), before);
+    }
+
+    /// press on one tab, move to another and release, like a mouse drag reorder
+    fn drag_tab(cx: &mut VisualTestContext, from: &'static str, to: &'static str) {
+        let start = cx.debug_bounds(from).unwrap().center();
+        let end = cx.debug_bounds(to).unwrap().center();
+        drag_to(cx, start, end);
+    }
+
+    #[gpui::test]
+    fn dragging_a_tab_reorders_it(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 3);
+        cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(600.)));
+        cx.run_until_parked();
+        let old = views(&ws, cx);
+        drag_tab(cx, "tab-title-0", "tab-title-2");
+        assert_eq!(views(&ws, cx), vec![old[1], old[2], old[0]]);
+    }
+
+    #[gpui::test]
+    fn disabled_drag_tabs_ignores_the_mouse(cx: &mut TestAppContext) {
+        let settings = Settings::parse(r#"{"drag_tabs": false}"#).unwrap();
+        let (ws, cx) = open_with_settings(cx, 3, "{}", settings);
+        cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(600.)));
+        cx.run_until_parked();
+        let before = views(&ws, cx);
+        drag_tab(cx, "tab-title-0", "tab-title-2");
+        assert_eq!(views(&ws, cx), before);
+    }
+
+    /// press at `start`, cross the drag threshold, move to `end` and release
+    fn drag_to(cx: &mut VisualTestContext, start: Point<Pixels>, end: Point<Pixels>) {
+        cx.simulate_event(MouseDownEvent {
+            position: start,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        // the first move starts the drag, the second feeds the drag move listeners
+        for _ in 0..2 {
+            cx.simulate_event(MouseMoveEvent {
+                position: end,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Modifiers::default(),
+            });
+            cx.run_until_parked();
+        }
+        cx.simulate_event(MouseUpEvent {
+            position: end,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn dragging_a_tab_onto_the_pane_edge_splits_it(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(600.)));
+        cx.run_until_parked();
+        let start = cx.debug_bounds("tab-title-0").unwrap().center();
+        let terminal = cx.debug_bounds("pane-terminal-0").unwrap();
+        let end = point(
+            terminal.origin.x + terminal.size.width * 0.75,
+            terminal.origin.y + terminal.size.height * 0.5,
+        );
+        drag_to(cx, start, end);
+        assert_eq!(ws.update(cx, |ws, _| ws.layout.pane_ids()).len(), 2);
+        let left = cx.debug_bounds("pane-terminal-0").unwrap();
+        let right = cx.debug_bounds("pane-terminal-1").unwrap();
+        assert!(
+            (left.size.width - right.size.width).abs() < gpui::px(2.),
+            "panes {left:?} {right:?}"
+        );
+        assert!(
+            left.size.width > gpui::px(400.) && left.size.width < gpui::px(500.),
+            "left pane did not take half the width: {left:?}"
+        );
+        assert!(
+            left.size.height > gpui::px(400.),
+            "panes lost their height: {left:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn dragging_a_tab_onto_the_bottom_edge_stacks_the_panes(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(600.)));
+        cx.run_until_parked();
+        let start = cx.debug_bounds("tab-title-0").unwrap().center();
+        let terminal = cx.debug_bounds("pane-terminal-0").unwrap();
+        let end = point(
+            terminal.origin.x + terminal.size.width * 0.5,
+            terminal.origin.y + terminal.size.height * 0.75,
+        );
+        drag_to(cx, start, end);
+        assert_eq!(ws.update(cx, |ws, _| ws.layout.pane_ids()).len(), 2);
+        let top = cx.debug_bounds("pane-terminal-0").unwrap();
+        let bottom = cx.debug_bounds("pane-terminal-1").unwrap();
+        assert!(bottom.origin.y > top.origin.y, "{top:?} {bottom:?}");
+        assert!(
+            (top.size.width - bottom.size.width).abs() < gpui::px(2.),
+            "{top:?} {bottom:?}"
+        );
+        assert!(
+            top.size.height > gpui::px(200.) && top.size.height < gpui::px(300.),
+            "top pane did not take half the height: {top:?}"
+        );
+    }
+
+    #[test]
+    fn drop_side_picks_the_nearest_edge() {
+        let bounds = Bounds {
+            origin: point(gpui::px(0.), gpui::px(0.)),
+            size: gpui::size(gpui::px(100.), gpui::px(100.)),
+        };
+        assert_eq!(
+            drop_side(bounds, point(gpui::px(10.), gpui::px(50.))),
+            DropSide::Left
+        );
+        assert_eq!(
+            drop_side(bounds, point(gpui::px(90.), gpui::px(50.))),
+            DropSide::Right
+        );
+        assert_eq!(
+            drop_side(bounds, point(gpui::px(50.), gpui::px(10.))),
+            DropSide::Top
+        );
+        assert_eq!(
+            drop_side(bounds, point(gpui::px(50.), gpui::px(90.))),
+            DropSide::Bottom
+        );
+    }
+
+    /// split the focused pane at `side`, moving its first tab into the new pane
+    fn split_pane(ws: &Entity<Workspace>, cx: &mut VisualTestContext, side: DropSide) -> usize {
+        ws.update_in(cx, |ws, window, cx| {
+            let target = ws.focused;
+            ws.split_with_tab(target, 0, target, side, window, cx);
+        });
+        cx.run_until_parked();
+        ws.update(cx, |ws, _| ws.focused)
+    }
+
+    #[gpui::test]
+    fn splitting_moves_the_tab_into_a_new_pane(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        let old = views(&ws, cx);
+        let new_pane = split_pane(&ws, cx, DropSide::Right);
+        let axis = ws.update(cx, |ws, _| match &ws.layout {
+            LayoutNode::Split { axis, .. } => Some(*axis),
+            _ => None,
+        });
+        assert_eq!(axis, Some(SplitAxis::Horizontal));
+        assert_ne!(new_pane, 0);
+        // the moved tab is alone in the new pane, the other one stays behind
+        assert_eq!(views(&ws, cx), vec![old[0]]);
+        assert_eq!(
+            ws.update(cx, |ws, _| ws.pane(0).unwrap().tabs[0].view.entity_id()),
+            old[1]
+        );
+    }
+
+    #[gpui::test]
+    fn drag_over_a_pane_picks_the_nearest_edge(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 1);
+        let bounds = Bounds {
+            origin: point(gpui::px(0.), gpui::px(0.)),
+            size: gpui::size(gpui::px(200.), gpui::px(100.)),
+        };
+        ws.update(cx, |ws, cx| {
+            ws.update_drop_zone(0, point(gpui::px(190.), gpui::px(50.)), bounds, cx)
+        });
+        assert_eq!(
+            ws.update(cx, |ws, _| ws.drop_zone),
+            Some((0, DropSide::Right))
+        );
+        // a position outside clears the pane's zone again
+        ws.update(cx, |ws, cx| {
+            ws.update_drop_zone(0, point(gpui::px(300.), gpui::px(50.)), bounds, cx)
+        });
+        assert_eq!(ws.update(cx, |ws, _| ws.drop_zone), None);
+    }
+
+    #[gpui::test]
+    fn moving_the_last_tab_between_panes_collapses_the_old_one(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        let new_pane = split_pane(&ws, cx, DropSide::Right);
+        ws.update_in(cx, |ws, window, cx| {
+            ws.move_tab_to_pane(0, 0, new_pane, 1, window, cx);
+        });
+        cx.run_until_parked();
+        // the emptied pane is gone, both tabs live in the new one
+        assert_eq!(ws.update(cx, |ws, _| ws.layout.pane_ids()), vec![new_pane]);
+        assert_eq!(views(&ws, cx).len(), 2);
+    }
+
+    #[gpui::test]
+    fn closing_the_last_tab_of_a_pane_removes_the_pane(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        let new_pane = split_pane(&ws, cx, DropSide::Right);
+        ws.update_in(cx, |ws, window, cx| {
+            ws.close_tab_at(new_pane, 0, window, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(ws.update(cx, |ws, _| ws.layout.pane_ids()), vec![0]);
+        assert_eq!(ws.update(cx, |ws, _| ws.focused), 0);
+    }
+
+    #[gpui::test]
+    fn closing_a_leaf_in_a_nested_split_keeps_the_other_leaf(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 3);
+        // left | (top / bottom)
+        let right = split_pane(&ws, cx, DropSide::Right);
+        let bottom = split_pane(&ws, cx, DropSide::Bottom);
+        assert_eq!(
+            ws.update(cx, |ws, _| ws.layout.pane_ids()),
+            vec![0, right, bottom]
+        );
+        // closing the bottom pane must not take the top one with it
+        ws.update_in(cx, |ws, window, cx| ws.close_tab_at(bottom, 0, window, cx));
+        cx.run_until_parked();
+        assert_eq!(ws.update(cx, |ws, _| ws.layout.pane_ids()), vec![0, right]);
+    }
+
+    #[gpui::test]
+    fn closing_a_nested_pane_focuses_the_sibling(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        // left | (top / bottom)
+        let top = split_pane(&ws, cx, DropSide::Right);
+        let bottom = split_pane(&ws, cx, DropSide::Bottom);
+        // a program runs in the top pane
+        ws.update_in(cx, |ws, window, cx| ws.focus_pane(top, window, cx));
+        cx.run_until_parked();
+        start_program(&ws, cx);
+        // closing the focused bottom pane must leave focus on the top one
+        ws.update_in(cx, |ws, window, cx| ws.focus_pane(bottom, window, cx));
+        cx.run_until_parked();
+        close_active(&ws, cx);
+        assert_eq!(ws.update(cx, |ws, _| ws.focused), top);
+        assert_eq!(current(&ws, cx), 0);
+        // closing the surviving pane's program must still ask
+        close_active(&ws, cx);
+        assert!(cx.debug_bounds("confirm-close").is_some());
+    }
+
+    #[gpui::test]
+    fn split_commands_split_the_focused_pane(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        let old = views(&ws, cx);
+        run_actions(&ws, cx, "\"split_right\"");
+        assert_eq!(ws.update(cx, |ws, _| ws.layout.pane_ids()).len(), 2);
+        // the active tab moved into the new pane, which now has focus
+        let new = ws.update(cx, |ws, _| ws.focused);
+        assert_ne!(new, 0);
+        assert_eq!(
+            ws.update(cx, |ws, _| ws.pane(new).unwrap().tabs[0].view.entity_id()),
+            old[1]
+        );
+        run_actions(&ws, cx, "\"split_up\"");
+        assert_eq!(ws.update(cx, |ws, _| ws.layout.pane_ids()).len(), 3);
+    }
+
+    #[gpui::test]
+    fn resizing_a_split_clamps_the_ratio(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        split_pane(&ws, cx, DropSide::Top);
+        ws.update(cx, |ws, cx| ws.resize_split(&[], 5.0, cx));
+        let ratio = ws.update(cx, |ws, _| match &ws.layout {
+            LayoutNode::Split { ratio, .. } => *ratio,
+            _ => panic!("expected a split"),
+        });
+        assert_eq!(ratio, 1.0 - MIN_SPLIT_RATIO);
     }
 
     #[gpui::test]
@@ -1072,7 +1907,9 @@ mod tests {
     }
 
     fn terminal(ws: &Entity<Workspace>, cx: &mut VisualTestContext, ix: usize) -> Entity<Terminal> {
-        ws.update(cx, |ws, cx| ws.tabs[ix].view.read(cx).terminal().clone())
+        ws.update(cx, |ws, cx| {
+            ws.focused_pane().tabs[ix].view.read(cx).terminal().clone()
+        })
     }
 
     /// in the active tab: optionally enable focus reporting (mode 1004), then save READ raw
@@ -1482,7 +2319,8 @@ mod tests {
 
     fn tab_icon_and_title(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> (String, String) {
         ws.update(cx, |ws, _| {
-            (ws.tabs[0].icon.clone(), ws.tabs[0].title.clone())
+            let tab = &ws.focused_pane().tabs[0];
+            (tab.icon.clone(), tab.title.clone())
         })
     }
 
@@ -1657,7 +2495,12 @@ mod tests {
         let json = r#"{"terminal": {"scrollbar": {"auto_hide": 3600}}}"#;
         let (ws, cx) = open_with_settings(cx, 1, "{}", Settings::parse(json).unwrap());
         let visible = |cx: &mut VisualTestContext| {
-            ws.update(cx, |ws, cx| ws.tabs[0].view.read(cx).scrollbar_visible(cx))
+            ws.update(cx, |ws, cx| {
+                ws.focused_pane().tabs[0]
+                    .view
+                    .read(cx)
+                    .scrollbar_visible(cx)
+            })
         };
         pump(cx);
         assert!(!visible(cx), "shown before any scrolling");
@@ -1687,7 +2530,7 @@ mod tests {
         wait_until(cx, "output never reached history", |cx| {
             terminal.read_with(cx, |t, _| t.history_size() > 100)
         });
-        let view = ws.update(cx, |ws, _| ws.tabs[0].view.clone());
+        let view = ws.update(cx, |ws, _| ws.focused_pane().tabs[0].view.clone());
         view.update(cx, |view, cx| view.scrollbar_down(100, cx));
         cx.run_until_parked();
         (100, terminal, cx)
@@ -1959,14 +2802,18 @@ mod tests {
 
         // the new shell has not printed anything yet, so the input is held back
         assert!(
-            !ws.update(cx, |ws, _| ws.tabs[1].pending_input.is_empty()),
+            !ws.update(cx, |ws, _| ws.focused_pane().tabs[1]
+                .pending_input
+                .is_empty()),
             "typed input was sent before the shell was ready"
         );
         let terminal = terminal(&ws, cx, 1);
         wait_until(cx, "queued command never ran", |cx| {
             terminal.read_with(cx, |t, _| line_starting_with(t, "ok_shell").is_some())
         });
-        assert!(ws.update(cx, |ws, _| ws.tabs[1].pending_input.is_empty()));
+        assert!(ws.update(cx, |ws, _| {
+            ws.focused_pane().tabs[1].pending_input.is_empty()
+        }));
     }
 
     #[gpui::test]
@@ -2210,7 +3057,10 @@ mod tests {
         run_actions(&ws, cx, r#"{"new_tab_with_profile": "dev"}"#);
         assert_eq!(views(&ws, cx).len(), 2);
         assert_eq!(current(&ws, cx), 1);
-        assert_eq!(ws.update(cx, |ws, _| ws.tabs[1].icon.clone()), "D");
+        assert_eq!(
+            ws.update(cx, |ws, _| ws.focused_pane().tabs[1].icon.clone()),
+            "D"
+        );
     }
 
     #[gpui::test]
@@ -2320,10 +3170,16 @@ mod tests {
     /// start a long program in the active tab and wait until it runs
     fn start_program(ws: &Entity<Workspace>, cx: &mut VisualTestContext) {
         ws.update(cx, |ws, cx| {
-            ws.input_to(ws.active, b"sleep 30\n".to_vec(), cx)
+            let pane = ws.focused;
+            let ix = ws.focused_pane().active;
+            ws.input_to(pane, ix, b"sleep 30\n".to_vec(), cx)
         });
         wait_until(cx, "sleep never started", |cx| {
-            ws.update(cx, |ws, cx| ws.running_program(ws.active, cx).is_some())
+            ws.update(cx, |ws, cx| {
+                let pane = ws.focused;
+                let ix = ws.focused_pane().active;
+                ws.running_program(pane, ix, cx).is_some()
+            })
         });
     }
 
