@@ -2,9 +2,6 @@
 
 import time
 
-import numpy as np
-import pytest
-
 from harness import App, bundled_theme, get_clipboard, ink, mask_bbox, near
 
 FEATURE = "unicode text"
@@ -121,36 +118,3 @@ def test_wide_window_title(app_factory):
     """an osc 2 title with cjk and emoji is the window title exactly"""
     app = printed(app_factory, "\\033]2;日本語 😀 title\\007", window_title=["title"])
     app.wait_title("日本語 😀 title")
-
-
-def ends_in_ellipsis(img, background: tuple) -> bool:
-    """the last ink of a line of text is a row of low dots, not part of a glyph"""
-    mask = ink(img, background)
-    columns = np.flatnonzero(mask.any(axis=0))
-    box = mask_bbox(mask)
-    if box is None:
-        return False
-    # the dots of "…" sit on the baseline and are much shorter than the letters
-    tail = mask[:, columns[-1] - 1 : columns[-1] + 1]
-    rows = np.flatnonzero(tail.any(axis=1))
-    return rows.max() - rows.min() + 1 <= (box[3] - box[1]) // 3
-
-
-@pytest.mark.parametrize("title", ["日本語日本語日本語日本語日本語日本語", "a-long-latin-title-for-the-tab"])
-def test_long_tab_title_ends_in_ellipsis(app_factory, title):
-    """a tab title too long for its tab is cut with an ellipsis inside the tab"""
-    width = 150
-    app = app_factory({"theme": {"mode": "dark"}, "hide_bar_for_one_tab": False, "tab_width": width,
-                       "show_tab_close_button": False, "tab_title": ["title"], "window_title": ["title"]},
-                      script=f"printf '\\033]2;{title}\\007'")
-    app.wait_title(title)
-    time.sleep(1.5)
-    h = app.bar_height()
-    img = app.shot()[3 : h - 3, : width - 2]
-    tab_bg = tuple(int(v) for v in img[1, width // 2])
-    box = mask_bbox(ink(img, tab_bg))
-    assert box is not None, "no tab text"
-    # the text fills the tab and stops at its right padding
-    assert width // 2 < box[2] <= width - 6, f"tab text {box} in a {width}px tab"
-    assert ends_in_ellipsis(img, tab_bg), "the cut title has no ellipsis"
-    app.snap(f"{title!r} cut with an ellipsis inside a 150px tab")

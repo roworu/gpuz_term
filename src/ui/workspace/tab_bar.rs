@@ -12,7 +12,7 @@ use skrifa::{
     instance::{LocationRef, Size},
 };
 
-use super::Workspace;
+use super::{Workspace, end_truncated::EndTruncated};
 use crate::{
     settings::{NewTabButton, Settings, TabIconPosition, TabTitleAlign},
     theme::Theme,
@@ -74,12 +74,14 @@ fn tab(ix: usize, title: String, icon: String, settings: &Settings) -> Stateful<
             TabTitleAlign::Center => row.justify_center(),
             TabTitleAlign::Right => row.justify_end(),
         })
+        // shrinks below its text, so long titles are cut at the end whatever the align
         .child(
             div()
                 .debug_selector(move || format!("tab-title-{ix}"))
+                .flex()
                 .min_w_0()
-                .truncate()
-                .child(title),
+                .overflow_hidden()
+                .child(EndTruncated::new(title)),
         );
     div()
         .id(("tab", ix))

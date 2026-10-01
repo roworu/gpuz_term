@@ -240,3 +240,142 @@ def test_overflowing_tabs_keep_width_and_scroll(app_factory):
     app.wheel(300, h // 2, up=True, clicks=10)
     app.wait(lambda: not close_to(tuple(app.shot()[h // 2, 800]), C["tab_active_background"]),
              msg="tabs scrolled by the wheel")
+
+
+# truncation checks: every tab looks alike, so each can be compared with one uncut reference
+CUT_THEME = {**THEME, "text_muted": THEME["text"], "tab_active_background": THEME["tab_bar_background"]}
+CUT_BG = as_rgb(CUT_THEME)["tab_bar_background"]
+CUT_BASE = {"tab_icon": {"dynamic": False, "default": ""}, "show_tab_close_button": False,
+            "hide_bar_for_one_tab": False}
+LONG = "a long title with several words in it"
+# widest char of the titles below, in ui font pixels: cjk glyphs are about one em
+EM = 18 * 0.875
+_references: dict = {}
+
+
+def cut_app(app_factory, title: str, **settings) -> App:
+    app = app_factory({"theme": {"mode": "dark"}, "window_title": ["number"], **CUT_BASE,
+                       "tab_title": [{"text": title}], **settings},
+                      files={"themes/dark.jsonc": CUT_THEME})
+    app.mouse(450, 500)
+    return app
+
+
+def text_mask(app: App, img, x0: int, x1: int):
+    """ink of the title rows between x0 and x1, the bar border rows left out"""
+    h = app.bar_height()
+    return ink(img[3 : h - 3, x0:x1], CUT_BG)
+
+
+def trim(mask):
+    """the mask from its first to its last inked column"""
+    cols = np.flatnonzero(mask.any(axis=0))
+    return mask[:, cols[0] : cols[-1] + 1] if len(cols) else mask[:, :0]
+
+
+def reference(app_factory, title: str):
+    """the title drawn uncut in a tab much wider than it"""
+    if title not in _references:
+        app = cut_app(app_factory, title, expand_tabs=False, tab_width=880)
+        time.sleep(1)
+        # stop short of the tab's border, it is ink too
+        _references[title] = trim(text_mask(app, app.shot(), 0, 860))
+        app.close()
+    return _references[title]
+
+
+def dilate(mask):
+    """grow ink by one pixel in every direction"""
+    out = mask.copy()
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            out |= np.roll(np.roll(mask, dy, axis=0), dx, axis=1)
+    return out
+
+
+def same_shape(a, b) -> bool:
+    """two inked texts match within a pixel, glyphs drawn at other subpixel offsets differ that much"""
+    w = max(a.shape[1], b.shape[1]) + 2
+    pad = lambda m: np.pad(m, ((0, 0), (1, w - m.shape[1] - 1)))
+    a, b = pad(a), pad(b)
+    return not (a & ~dilate(b)).any() and not (b & ~dilate(a)).any()
+
+
+def runs(cols) -> list:
+    """(first, last) of each group of adjacent columns"""
+    groups = np.split(cols, np.flatnonzero(np.diff(cols) > 1) + 1) if len(cols) else []
+    return [(int(g[0]), int(g[-1])) for g in groups]
+
+
+def check_tab(mask, ref, ellipsis, room: int, where: str) -> None:
+    """a tab title is the whole reference when it has room, otherwise a start of it and an
+    ellipsis, keeping as much as fits"""
+    text = trim(mask)
+    assert text.shape[1], f"{where}: no title"
+    if ref.shape[1] <= room:
+        assert same_shape(text, ref), f"{where}: title fits in {room}px but is not drawn whole"
+        return
+    width = text.shape[1]
+    # antialiasing blurs where the kept text ends and the ellipsis starts by a pixel or two
+    splits = range(width - ellipsis.shape[1] - 3, width - ellipsis.shape[1] + 3)
+    assert any(same_shape(trim(text[:, x:]), ellipsis) for x in splits), \
+        f"{where}: cut title does not end in an ellipsis"
+    assert any((kept := trim(text[:, :x])).shape[1] and same_shape(kept, ref[:, : kept.shape[1]])
+               for x in splits), f"{where}: the kept text is not the start of the title"
+    # one more char and its space would not have fit
+    assert room - text.shape[1] < 2 * EM, f"{where}: cut {room - text.shape[1]}px short of its room"
+
+
+def check_tabs(app: App, ref, ellipsis, count: int) -> None:
+    img = app.shot()
+    edges = borders(app, img)[:count]
+    assert len(edges) == count, edges
+    padding = round(0.75 * 18)
+    for ix, right in enumerate(edges):
+        left = edges[ix - 1] + 1 if ix else 0
+        mask = text_mask(app, img, left, right)
+        start = int(np.flatnonzero(mask.any(axis=0))[0]) if mask.any() else padding
+        check_tab(mask, ref, ellipsis, right - left - padding - start + 1, f"tab {ix + 1} of {count}")
+
+
+@pytest.mark.parametrize("align", ["left", "center", "right"])
+@pytest.mark.parametrize("layout", [
+    {"expand_tabs": True, "tabs": 2}, {"expand_tabs": True, "tabs": 3}, {"expand_tabs": True, "tabs": 5},
+    {"expand_tabs": True, "tabs": 8}, {"expand_tabs": False, "tab_width": 120, "tabs": 3},
+    {"expand_tabs": False, "tab_width": 260, "tabs": 3},
+], ids=["expand-2", "expand-3", "expand-5", "expand-8", "fixed-120", "fixed-260"])
+def test_long_titles_are_cut_only_at_the_end(app_factory, align, layout):
+    """every tab shows the start of a long title and an ellipsis, as much as fits"""
+    layout = dict(layout)
+    tabs = layout.pop("tabs")
+    ref = reference(app_factory, LONG)
+    app = cut_app(app_factory, LONG, tab_title_align=align, **layout)
+    open_tabs(app, tabs)
+    time.sleep(0.5)
+    check_tabs(app, ref, reference(app_factory, "…"), tabs)
+    app.snap(f"{tabs} tabs with a long title, {align} aligned")
+
+
+@pytest.mark.parametrize("title", ["tab", "x  y  z  w  v  u  t  s  r  q", "日本語のタブの名前です長い"],
+                         ids=["short", "spaces", "cjk"])
+def test_titles_of_every_kind_are_cut_only_at_the_end(app_factory, title):
+    """short titles stay whole, spaced and cjk titles are cut at the end only"""
+    ref = reference(app_factory, title)
+    app = cut_app(app_factory, title, expand_tabs=True)
+    open_tabs(app, 6)
+    time.sleep(0.5)
+    check_tabs(app, ref, reference(app_factory, "…"), 6)
+    app.snap(f"six expanded tabs titled {title!r}")
+
+
+def test_cut_follows_window_resize(app_factory):
+    """expanded tabs get narrower with the window and the titles are cut again to fit"""
+    ref = reference(app_factory, LONG)
+    app = cut_app(app_factory, LONG, expand_tabs=True)
+    open_tabs(app, 3)
+    for width in (900, 640, 480, 900):
+        app.resize(width, 600)
+        app.wait(lambda: app.size()[0] == width, msg=f"width {width}")
+        time.sleep(0.5)
+        check_tabs(app, ref, reference(app_factory, "…"), 3)
+    app.snap("titles cut again after resizing")

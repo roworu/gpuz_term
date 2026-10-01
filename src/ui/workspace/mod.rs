@@ -1,5 +1,6 @@
 //! root view: owns tabs and handles new tab / close tab.
 
+mod end_truncated;
 mod notifications;
 mod tab_bar;
 mod tab_icon;
