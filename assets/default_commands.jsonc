@@ -29,6 +29,8 @@
 //   "new_background_tab"               - open a tab without switching to it
 //   { "new_background_tab_with_profile": "dev" } - same, with the named profile
 //   "close_tab"                        - close the active tab
+//   "close_tabs_to_right"              - close every tab to the right of the active one
+//   "close_tabs_to_left"               - close every tab to the left of the active one
 //   "next_tab"                         - switch to the tab on the right
 //   "prev_tab"                         - switch to the tab on the left
 //   { "activate_tab": 2 }              - switch to the tab at this 1 based position
@@ -61,6 +63,8 @@
 
     { "name": "create new", "category": "tabs", "actions": ["new_tab"] },
     { "name": "close current", "category": "tabs", "actions": ["close_tab"] },
+    { "name": "close tabs to the right", "category": "tabs", "actions": ["close_tabs_to_right"] },
+    { "name": "close tabs to the left", "category": "tabs", "actions": ["close_tabs_to_left"] },
     { "name": "switch to left", "category": "tabs", "actions": ["prev_tab"] },
     { "name": "switch to right", "category": "tabs", "actions": ["next_tab"] },
     { "name": "go to tab", "category": "tabs", "actions": ["pick_tab"] },

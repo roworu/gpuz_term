@@ -443,12 +443,22 @@ impl Render for About {
 pub struct CloseConfirmed;
 
 /// what the close dialog asks about
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum CloseTarget {
-    /// the tab with this view
-    Tab(EntityId),
+    /// these tabs, closed together, like the tabs on one side of the active one
+    Tabs(Vec<EntityId>),
     /// the whole window, quitting the app
     Window,
+}
+
+impl CloseTarget {
+    /// true when closing the tab with this view is part of what is asked
+    pub fn contains(&self, id: EntityId) -> bool {
+        match self {
+            Self::Tabs(tabs) => tabs.contains(&id),
+            Self::Window => false,
+        }
+    }
 }
 
 /// asks before closing a tab or quitting while programs still run
@@ -536,10 +546,16 @@ impl Render for ConfirmClose {
             .p_4()
             .gap_2()
             .child(self.message.clone())
-            .child(div().text_color(theme.text_muted).child(match self.target {
-                CloseTarget::Tab(_) => "close it anyway? arrows pick a button, escape cancels",
-                CloseTarget::Window => "quit anyway? arrows pick a button, escape cancels",
-            }))
+            .child(
+                div()
+                    .text_color(theme.text_muted)
+                    .child(match &self.target {
+                        CloseTarget::Tabs(_) => {
+                            "close anyway? arrows pick a button, escape cancels"
+                        }
+                        CloseTarget::Window => "quit anyway? arrows pick a button, escape cancels",
+                    }),
+            )
             .child(
                 div()
                     .flex()
@@ -556,8 +572,8 @@ impl Render for ConfirmClose {
                     .child(
                         button(
                             "confirm-close-ok",
-                            match self.target {
-                                CloseTarget::Tab(_) => "close",
+                            match &self.target {
+                                CloseTarget::Tabs(_) => "close",
                                 CloseTarget::Window => "quit",
                             },
                             self.close_selected,

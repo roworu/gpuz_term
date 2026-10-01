@@ -366,7 +366,63 @@ impl Workspace {
             self.tab_title(ix, cx)
         );
         let view = self.tabs[ix].view.clone();
-        self.open_confirm(message, CloseTarget::Tab(view.entity_id()), window, cx);
+        self.open_confirm(
+            message,
+            CloseTarget::Tabs(vec![view.entity_id()]),
+            window,
+            cx,
+        );
+    }
+
+    /// close every tab on one side of `ix`, asking once when programs still run in them
+    fn request_close_tabs_side(
+        &mut self,
+        ix: usize,
+        right: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.confirm_close.is_some() {
+            return;
+        }
+        let range = if right {
+            ix + 1..self.tabs.len()
+        } else {
+            0..ix
+        };
+        if range.is_empty() {
+            return;
+        }
+        let ids: Vec<EntityId> = range
+            .clone()
+            .map(|ix| self.tabs[ix].view.entity_id())
+            .collect();
+        let names: Vec<String> = if Settings::get(cx).close_running_tab_warn {
+            range
+                .filter_map(|ix| self.running_program(ix, cx))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if names.is_empty() {
+            self.close_tabs(&ids, window, cx);
+            return;
+        }
+        self.open_confirm(
+            side_close_message(&names),
+            CloseTarget::Tabs(ids),
+            window,
+            cx,
+        );
+    }
+
+    /// close the tabs with these views, skipping any that are already gone
+    fn close_tabs(&mut self, ids: &[EntityId], window: &mut Window, cx: &mut Context<Self>) {
+        for id in ids {
+            if let Some(ix) = self.tabs.iter().position(|tab| tab.view.entity_id() == *id) {
+                self.close_tab_at(ix, window, cx);
+            }
+        }
     }
 
     /// quit, asking first when programs still run in some tabs
@@ -410,22 +466,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let confirm = cx.new(|cx| ConfirmClose::new(message, target, cx));
+        let confirm = cx.new(|cx| ConfirmClose::new(message, target.clone(), cx));
         self.open_overlay(&confirm, window, cx);
         self._overlay_subscriptions.push(cx.subscribe_in(
             &confirm,
             window,
             move |this, _, _: &CloseConfirmed, window, cx| {
                 this.close_overlay(window, cx);
-                match target {
+                match &target {
                     // tabs may have moved or closed while the dialog was open
-                    CloseTarget::Tab(id) => {
-                        if let Some(ix) =
-                            this.tabs.iter().position(|tab| tab.view.entity_id() == id)
-                        {
-                            this.close_tab_at(ix, window, cx);
-                        }
-                    }
+                    CloseTarget::Tabs(ids) => this.close_tabs(ids, window, cx),
                     CloseTarget::Window => this.quit(cx),
                 }
             },
@@ -444,12 +494,16 @@ impl Workspace {
             self.quit(cx);
             return;
         }
-        // the shell may exit while its tab is asked about, leaving nothing to confirm
-        if self
-            .confirm_close
-            .as_ref()
-            .is_some_and(|confirm| confirm.read(cx).target == CloseTarget::Tab(closed))
-        {
+        // the shell may exit while its tab is asked about, leaving nothing to confirm.
+        // a batch keeps its dialog until every tab it asks about is gone
+        if self.confirm_close.as_ref().is_some_and(|confirm| {
+            let target = confirm.read(cx).target.clone();
+            target.contains(closed)
+                && !self
+                    .tabs
+                    .iter()
+                    .any(|tab| target.contains(tab.view.entity_id()))
+        }) {
             self.close_overlay(window, cx);
         }
         // closing active tab activates one on its left
@@ -459,7 +513,13 @@ impl Workspace {
         } else {
             self.active.min(self.tabs.len() - 1)
         };
-        self.activate_tab(active, window, cx);
+        // a dialog that still asks about a remaining tab keeps focus and stays up
+        if self.confirm_close.is_some() && active == self.active {
+            self.refresh_titles();
+            cx.notify();
+        } else {
+            self.activate_tab(active, window, cx);
+        }
     }
 
     /// read theme files again and recolor the ui and every terminal
@@ -555,6 +615,14 @@ impl Workspace {
                 }
                 CommandAction::CloseTab => {
                     self.request_close_tab(ix, window, cx);
+                    target = None;
+                }
+                CommandAction::CloseTabsToRight => {
+                    self.request_close_tabs_side(ix, true, window, cx);
+                    target = None;
+                }
+                CommandAction::CloseTabsToLeft => {
+                    self.request_close_tabs_side(ix, false, window, cx);
                     target = None;
                 }
                 CommandAction::NextTab => {
@@ -799,12 +867,27 @@ impl Workspace {
     }
 }
 
-/// quit dialog text naming the programs still running, the list is cut after a few names
-fn quit_message(names: &[String]) -> String {
+/// program names joined for a dialog, cut short after a few
+fn name_list(names: &[String]) -> String {
     let mut list = names[..names.len().min(QUIT_DIALOG_MAX_NAMES)].join(", ");
     if names.len() > QUIT_DIALOG_MAX_NAMES {
         list.push_str(", …");
     }
+    list
+}
+
+/// dialog text naming the programs still running in tabs about to close
+fn side_close_message(names: &[String]) -> String {
+    let list = name_list(names);
+    match names.len() {
+        1 => format!("a tab to close is still running a program: {list}"),
+        count => format!("{count} tabs to close are still running programs: {list}"),
+    }
+}
+
+/// quit dialog text naming the programs still running, the list is cut after a few names
+fn quit_message(names: &[String]) -> String {
+    let list = name_list(names);
     match names.len() {
         1 => format!("1 tab is still running a program: {list}"),
         count => format!("{count} tabs are still running programs: {list}"),
@@ -2306,6 +2389,89 @@ mod tests {
     }
 
     #[gpui::test]
+    fn close_tabs_to_the_right_keeps_the_active_and_its_left_neighbors(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 4);
+        let old = views(&ws, cx);
+        assert_eq!(activate(&ws, cx, 1), 1);
+        run_actions(&ws, cx, r#""close_tabs_to_right""#);
+        assert_eq!(views(&ws, cx), vec![old[0], old[1]]);
+        assert_eq!(current(&ws, cx), 1);
+        assert!(cx.debug_bounds("confirm-close").is_none());
+    }
+
+    #[gpui::test]
+    fn close_tabs_to_the_left_keeps_the_active_and_its_right_neighbors(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 4);
+        let old = views(&ws, cx);
+        assert_eq!(activate(&ws, cx, 2), 2);
+        run_actions(&ws, cx, r#""close_tabs_to_left""#);
+        assert_eq!(views(&ws, cx), vec![old[2], old[3]]);
+        assert_eq!(current(&ws, cx), 0);
+    }
+
+    #[gpui::test]
+    fn closing_an_empty_tab_side_does_nothing(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 2);
+        let old = views(&ws, cx);
+        assert_eq!(activate(&ws, cx, 1), 1);
+        run_actions(&ws, cx, r#""close_tabs_to_right""#);
+        assert_eq!(views(&ws, cx), old);
+        assert_eq!(current(&ws, cx), 1);
+        assert_eq!(activate(&ws, cx, 0), 0);
+        run_actions(&ws, cx, r#""close_tabs_to_left""#);
+        assert_eq!(views(&ws, cx), old);
+        assert_eq!(current(&ws, cx), 0);
+    }
+
+    #[gpui::test]
+    fn close_tabs_side_asks_once_for_running_programs(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 3);
+        let old = views(&ws, cx);
+        start_program(&ws, cx);
+        activate(&ws, cx, 0);
+        run_actions(&ws, cx, r#""close_tabs_to_right""#);
+        assert_eq!(views(&ws, cx), old);
+        let (target, message) = dialog(&ws, cx).expect("busy side closed without asking");
+        assert_eq!(target, CloseTarget::Tabs(vec![old[1], old[2]]));
+        assert_eq!(message, "a tab to close is still running a program: sleep");
+        type_keys(cx, "enter");
+        assert_eq!(views(&ws, cx), vec![old[0]]);
+        assert_eq!(current(&ws, cx), 0);
+    }
+
+    #[gpui::test]
+    fn close_tabs_side_dialog_survives_one_tab_exiting(cx: &mut TestAppContext) {
+        let (ws, cx) = open(cx, 3);
+        let old = views(&ws, cx);
+        start_program(&ws, cx);
+        activate(&ws, cx, 0);
+        // ask about the two tabs to the right, then end the shell of the first
+        run_actions(&ws, cx, r#""close_tabs_to_right""#);
+        assert_eq!(views(&ws, cx), old);
+        terminal(&ws, cx, 1).update(cx, |terminal, _| terminal.input(b"exit\n".to_vec()));
+        wait_until(cx, "tab never exited", |cx| views(&ws, cx).len() == 2);
+        cx.run_until_parked();
+        // one target is gone, the other still runs, so the dialog stays up
+        assert!(cx.debug_bounds("confirm-close").is_some());
+        type_keys(cx, "enter");
+        assert_eq!(views(&ws, cx), vec![old[0]]);
+        assert_eq!(current(&ws, cx), 0);
+    }
+
+    #[test]
+    fn side_close_message_lists_a_few_programs() {
+        let names = |n: &[&str]| n.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            side_close_message(&names(&["vim"])),
+            "a tab to close is still running a program: vim"
+        );
+        assert_eq!(
+            side_close_message(&names(&["vim", "cargo"])),
+            "2 tabs to close are still running programs: vim, cargo"
+        );
+    }
+
+    #[gpui::test]
     fn close_button_in_dialog_closes_running_tab(cx: &mut TestAppContext) {
         let (ws, cx) = open(cx, 2);
         start_program(&ws, cx);
@@ -2341,7 +2507,7 @@ mod tests {
         ws.update(cx, |ws, cx| {
             ws.confirm_close.as_ref().map(|confirm| {
                 let confirm = confirm.read(cx);
-                (confirm.target, confirm.message().to_string())
+                (confirm.target.clone(), confirm.message().to_string())
             })
         })
     }
@@ -2457,7 +2623,7 @@ mod tests {
         });
         cx.run_until_parked();
         let (target, message) = dialog(&ws, cx).expect("busy tab closed without asking");
-        assert_eq!(target, CloseTarget::Tab(old[1]));
+        assert_eq!(target, CloseTarget::Tabs(vec![old[1]]));
         assert!(
             message.starts_with("\"sleep\" is still running in tab 2 \""),
             "{message}"
