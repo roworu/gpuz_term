@@ -182,4 +182,31 @@ mod tests {
         assert!(ScrollEasing::EaseInOut.apply(0.25) < 0.25);
         assert_eq!(ScrollEasing::EaseInOut.apply(0.5), 0.5);
     }
+
+    #[test]
+    fn line_height_values() {
+        assert_eq!(LineHeight::Comfortable.value(), 1.618);
+        assert_eq!(LineHeight::Standard.value(), 1.3);
+        assert_eq!(LineHeight::Custom(2.0).value(), 2.0);
+    }
+
+    #[test]
+    fn cursor_shapes_map_to_alacritty() {
+        assert_eq!(
+            AlacCursorShape::from(CursorShape::Block),
+            AlacCursorShape::Block
+        );
+        assert_eq!(
+            AlacCursorShape::from(CursorShape::Bar),
+            AlacCursorShape::Beam
+        );
+        assert_eq!(
+            AlacCursorShape::from(CursorShape::Underline),
+            AlacCursorShape::Underline
+        );
+        assert_eq!(
+            AlacCursorShape::from(CursorShape::Hollow),
+            AlacCursorShape::HollowBlock
+        );
+    }
 }

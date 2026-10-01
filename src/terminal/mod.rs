@@ -196,7 +196,7 @@ mod tests {
 
     use alacritty_terminal::event::Event as AlacTermEvent;
     use futures::{FutureExt, StreamExt};
-    use gpui::{Bounds, point, px, size};
+    use gpui::{AppContext, Bounds, point, px, size};
 
     use super::{
         Terminal, TerminalBounds, TerminalBuilder, foreground_process, process::ForegroundProcess,
@@ -490,5 +490,391 @@ mod tests {
         terminal.sync();
         assert!(screen_text(terminal).contains("quiet_ready"));
         assert_eq!(terminal.last_content.cells.as_ptr(), buffer);
+    }
+
+    #[gpui::test]
+    fn process_event_handles_alacritty_events(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+        let builder = spawn(&TerminalSettings::default());
+        let terminal = cx.new(|_| builder.terminal);
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(AlacTermEvent::Title("hello".into()), cx);
+        });
+        assert_eq!(
+            terminal.read_with(cx, |terminal, _| terminal.title.clone()),
+            "hello"
+        );
+        assert_eq!(
+            terminal.read_with(cx, |terminal, _| terminal.title("default")),
+            "hello"
+        );
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(AlacTermEvent::ResetTitle, cx);
+        });
+        assert!(terminal.read_with(cx, |terminal, _| terminal.title.is_empty()));
+        assert_eq!(
+            terminal.read_with(cx, |terminal, _| terminal.title("default")),
+            "default"
+        );
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(
+                AlacTermEvent::ClipboardStore(
+                    alacritty_terminal::term::ClipboardType::Clipboard,
+                    "stored".into(),
+                ),
+                cx,
+            );
+        });
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("stored".into())
+        );
+
+        let load = std::sync::Arc::new(|text: &str| format!("load:{text}"));
+        let size = std::sync::Arc::new(|size: alacritty_terminal::event::WindowSize| {
+            format!("{}x{}", size.num_lines, size.num_cols)
+        });
+        let color = std::sync::Arc::new(|rgb: alacritty_terminal::vte::ansi::Rgb| {
+            format!("{},{},{}", rgb.r, rgb.g, rgb.b)
+        });
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(
+                AlacTermEvent::ClipboardLoad(
+                    alacritty_terminal::term::ClipboardType::Clipboard,
+                    load,
+                ),
+                cx,
+            );
+            terminal.process_event(AlacTermEvent::PtyWrite("p".into()), cx);
+            terminal.process_event(AlacTermEvent::TextAreaSizeRequest(size), cx);
+            terminal.process_event(AlacTermEvent::ColorRequest(258, color.clone()), cx);
+            terminal.process_event(AlacTermEvent::ColorRequest(0, color), cx);
+        });
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(AlacTermEvent::MouseCursorDirty, cx);
+            terminal.process_event(AlacTermEvent::CursorBlinkingChange, cx);
+            terminal.process_event(AlacTermEvent::Bell, cx);
+        });
+
+        let status = std::process::Command::new("true").status().unwrap();
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(AlacTermEvent::Exit, cx);
+            terminal.process_event(AlacTermEvent::ChildExit(status), cx);
+            terminal.process_event(AlacTermEvent::Wakeup, cx);
+        });
+    }
+}
+
+#[cfg(test)]
+mod history_cap_terminal {
+
+    use gpui::{Bounds, point, px, size};
+
+    use super::TerminalBounds;
+    use super::tests::{profile, spawn_with, wait_for_text};
+    use crate::settings::{MAX_HISTORY_LENGTH, Settings, Shell, TerminalSettings};
+
+    fn run(settings: &TerminalSettings, lines: usize) -> super::TerminalBuilder {
+        let p = profile(Shell::WithArguments {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                format!(
+                    "i=0; while [ $i -lt {lines} ]; do echo row_$i; i=$((i+1)); done; echo agent_done; sleep 5"
+                ),
+            ],
+        });
+        let mut b = spawn_with(settings, &p);
+        wait_for_text(&mut b.terminal, "agent_done");
+        b
+    }
+
+    fn resize(b: &mut super::TerminalBuilder, w: f32, h: f32) {
+        b.terminal.set_size(TerminalBounds::new(
+            px(20.),
+            px(10.),
+            Bounds::new(point(px(0.), px(0.)), size(px(w), px(h))),
+        ));
+        b.terminal.sync();
+    }
+
+    fn huge() -> TerminalSettings {
+        let json = format!(
+            r#"{{"terminal": {{"max_history_length": {}}}}}"#,
+            usize::MAX
+        );
+        Settings::parse(&json).unwrap().terminal
+    }
+
+    #[test]
+    fn huge_history_setting_spawns_and_prints() {
+        let b = run(&huge(), 200);
+        assert!(b.terminal.last_content.history_size > 100);
+    }
+
+    #[test]
+    fn huge_history_setting_survives_resizes() {
+        let mut b = run(&huge(), 200);
+        resize(&mut b, 400., 200.);
+        resize(&mut b, 1600., 1200.);
+        resize(&mut b, 100., 40.);
+        assert!(b.terminal.history_size() > 0);
+    }
+
+    #[test]
+    fn cap_value_survives_resizes() {
+        let s = TerminalSettings {
+            max_history_length: MAX_HISTORY_LENGTH,
+            ..TerminalSettings::default()
+        };
+        let mut b = run(&s, 50);
+        resize(&mut b, 1600., 1200.);
+        resize(&mut b, 200., 100.);
+    }
+
+    #[test]
+    fn zero_history_survives_resizes() {
+        let s = TerminalSettings {
+            max_history_length: 0,
+            ..TerminalSettings::default()
+        };
+        let mut b = run(&s, 50);
+        resize(&mut b, 1600., 1200.);
+        resize(&mut b, 200., 100.);
+    }
+}
+
+#[cfg(test)]
+mod profiles_terminal {
+
+    use gpui::WindowAppearance;
+
+    use super::tests::{profile, spawn_with, wait_for_text};
+    use crate::{
+        settings::{Shell, TerminalSettings, ThemeMode, ThemeSettings},
+        theme::Theme,
+    };
+
+    fn sh(script: &str) -> Shell {
+        Shell::WithArguments {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), format!("{script}; sleep 5")],
+        }
+    }
+
+    #[test]
+    fn profile_program_command_runs() {
+        let p = profile(Shell::Program("/bin/sh".into()));
+        let mut b = spawn_with(&TerminalSettings::default(), &p);
+        b.terminal.input(b"echo prog_$((6*7))\r".to_vec());
+        wait_for_text(&mut b.terminal, "prog_42");
+    }
+
+    #[test]
+    fn several_env_vars_reach_command() {
+        let mut p = profile(sh("echo \"vars=$AGENT_A-$AGENT_B-$AGENT_C=\""));
+        p.env.insert("AGENT_A".into(), "one".into());
+        p.env.insert("AGENT_B".into(), "two words".into());
+        p.env.insert("AGENT_C".into(), "".into());
+        let mut b = spawn_with(&TerminalSettings::default(), &p);
+        wait_for_text(&mut b.terminal, "vars=one-two words-=");
+    }
+
+    #[test]
+    fn profile_env_overrides_term_program() {
+        let mut p = profile(sh("echo \"tp=$TERM_PROGRAM=\""));
+        p.env.insert("TERM_PROGRAM".into(), "agent_override".into());
+        let mut b = spawn_with(&TerminalSettings::default(), &p);
+        wait_for_text(&mut b.terminal, "tp=agent_override=");
+    }
+
+    #[test]
+    fn env_of_one_profile_does_not_leak_into_another() {
+        let mut p = profile(sh("echo \"leak=${AGENT_LEAK:-none}=\""));
+        p.env.insert("AGENT_LEAK".into(), "yes".into());
+        let mut b = spawn_with(&TerminalSettings::default(), &p);
+        wait_for_text(&mut b.terminal, "leak=yes=");
+        let p = profile(sh("echo \"leak=${AGENT_LEAK:-none}=\""));
+        let mut b = spawn_with(&TerminalSettings::default(), &p);
+        wait_for_text(&mut b.terminal, "leak=none=");
+    }
+
+    #[test]
+    fn absolute_working_directory_is_used() {
+        let dir = std::env::temp_dir().join(format!("kuterm_agent_wd_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let mut p = profile(sh("echo \"wd=$(pwd -P)=\""));
+        p.working_directory = Some(dir.clone());
+        let mut b = spawn_with(&TerminalSettings::default(), &p);
+        wait_for_text(&mut b.terminal, &format!("wd={}=", dir.display()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tilde_subfolder_is_expanded_to_home() {
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+        let name = format!("kuterm_agent_home_{}", std::process::id());
+        let dir = home.join(&name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut p = profile(sh("echo \"hw=$(pwd)=\""));
+        p.working_directory = Some(format!("~/{name}").into());
+        let mut b = spawn_with(&TerminalSettings::default(), &p);
+        wait_for_text(&mut b.terminal, &format!("hw={}=", dir.display()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn no_working_directory_uses_kuterm_folder() {
+        let cwd = std::env::current_dir().unwrap();
+        let p = profile(sh("echo \"cw=$(pwd)=\""));
+        let mut b = spawn_with(&TerminalSettings::default(), &p);
+        wait_for_text(&mut b.terminal, &format!("cw={}=", cwd.display()));
+    }
+
+    #[test]
+    fn profile_theme_mode_overrides_appearance() {
+        let mut p = profile(Shell::System);
+        p.theme = Some(ThemeSettings {
+            mode: ThemeMode::Dark,
+            dark: None,
+            light: None,
+        });
+        let mut b = spawn_with(&TerminalSettings::default(), &p);
+        b.terminal.apply_theme(WindowAppearance::Light);
+        assert_eq!(b.terminal.theme, Some(Theme::bundled(true)));
+
+        p.theme = Some(ThemeSettings {
+            mode: ThemeMode::Light,
+            dark: None,
+            light: None,
+        });
+        let mut b = spawn_with(&TerminalSettings::default(), &p);
+        b.terminal.apply_theme(WindowAppearance::Dark);
+        assert_eq!(b.terminal.theme, Some(Theme::bundled(false)));
+    }
+
+    #[test]
+    fn profile_without_theme_has_no_own_theme() {
+        let p = profile(Shell::System);
+        let mut b = spawn_with(&TerminalSettings::default(), &p);
+        for appearance in [WindowAppearance::Dark, WindowAppearance::Light] {
+            b.terminal.apply_theme(appearance);
+            assert_eq!(b.terminal.theme, None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod scrollbar_terminal {
+
+    use super::tests::{profile, screen_text, spawn_with, wait_for_text};
+    use crate::settings::{Shell, TerminalSettings};
+
+    fn printing(lines: usize, settings: &TerminalSettings) -> super::TerminalBuilder {
+        let p = profile(Shell::WithArguments {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                format!(
+                    "i=0; while [ $i -lt {lines} ]; do echo row_$i; i=$((i+1)); done; echo agent_done; sleep 5"
+                ),
+            ],
+        });
+        let mut b = spawn_with(settings, &p);
+        wait_for_text(&mut b.terminal, "agent_done");
+        b
+    }
+
+    fn with_history(n: usize) -> TerminalSettings {
+        TerminalSettings {
+            max_history_length: n,
+            ..TerminalSettings::default()
+        }
+    }
+
+    #[test]
+    fn short_output_has_no_history() {
+        let b = printing(1, &with_history(100));
+        assert_eq!(b.terminal.last_content.history_size, 0);
+    }
+
+    #[test]
+    fn history_capped_at_setting() {
+        let b = printing(300, &with_history(10));
+        assert_eq!(b.terminal.last_content.history_size, 10);
+    }
+
+    #[test]
+    fn history_below_cap_is_not_padded() {
+        let b = printing(300, &with_history(100_000));
+        let h = b.terminal.last_content.history_size;
+        assert!(h > 200 && h < 400, "history {h}");
+    }
+
+    #[test]
+    fn zero_history_is_unlimited() {
+        let b = printing(1500, &with_history(0));
+        assert!(b.terminal.last_content.history_size >= 1400);
+    }
+
+    #[test]
+    fn scroll_to_top_shows_first_line() {
+        let mut b = printing(300, &with_history(0));
+        let t = &mut b.terminal;
+        let h = t.last_content.history_size;
+        t.scroll_to(h);
+        t.sync();
+        assert_eq!(t.last_content.display_offset, h);
+        assert!(screen_text(t).contains("row_0"));
+    }
+
+    #[test]
+    fn scroll_to_is_absolute_not_relative() {
+        let mut b = printing(300, &with_history(0));
+        let t = &mut b.terminal;
+        t.scroll_to(50);
+        t.sync();
+        t.scroll_to(20);
+        t.sync();
+        assert_eq!(t.last_content.display_offset, 20);
+        t.scroll(5);
+        t.sync();
+        t.scroll_to(7);
+        t.sync();
+        assert_eq!(t.last_content.display_offset, 7);
+    }
+
+    #[test]
+    fn scroll_to_past_history_clamps() {
+        let mut b = printing(300, &with_history(40));
+        let t = &mut b.terminal;
+        t.scroll_to(10_000);
+        t.sync();
+        assert_eq!(t.last_content.display_offset, 40);
+    }
+
+    #[test]
+    fn scroll_to_zero_returns_to_bottom() {
+        let mut b = printing(300, &with_history(0));
+        let t = &mut b.terminal;
+        t.scroll_to(100);
+        t.sync();
+        t.scroll_to(0);
+        t.sync();
+        assert_eq!(t.last_content.display_offset, 0);
+        assert!(screen_text(t).contains("agent_done"));
+    }
+
+    #[test]
+    fn scroll_to_without_history_stays_at_bottom() {
+        let mut b = printing(1, &with_history(100));
+        let t = &mut b.terminal;
+        t.scroll_to(5);
+        t.sync();
+        assert_eq!(t.last_content.display_offset, 0);
     }
 }

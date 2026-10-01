@@ -381,4 +381,29 @@ mod test {
             modifier_code(&Keystroke::parse("shift-ctrl-alt-a").unwrap())
         );
     }
+
+    #[test]
+    fn test_extra_special_keys() {
+        let none = TermMode::empty();
+        assert_eq!(
+            to_esc_str(&Keystroke::parse("alt-enter").unwrap(), none, false),
+            Some("\x1b\x0d".into())
+        );
+        assert_eq!(
+            to_esc_str(&Keystroke::parse("shift-tab").unwrap(), none, false),
+            Some("\x1b[Z".into())
+        );
+        assert_eq!(
+            to_esc_str(&Keystroke::parse("ctrl-backspace").unwrap(), none, false),
+            Some("\x08".into())
+        );
+        assert_eq!(
+            to_esc_str(&Keystroke::parse("alt-backspace").unwrap(), none, false),
+            Some("\x1b\x7f".into())
+        );
+        assert_eq!(
+            to_esc_str(&Keystroke::parse("shift-backspace").unwrap(), none, false),
+            Some("\x7f".into())
+        );
+    }
 }

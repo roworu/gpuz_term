@@ -66,3 +66,26 @@ impl From<TerminalBounds> for WindowSize {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn total_lines_match_visible_rows() {
+        let bounds = TerminalBounds::new(
+            px(20.),
+            px(10.),
+            Bounds::new(gpui::Point::default(), size(px(800.), px(480.))),
+        );
+        assert_eq!(bounds.screen_lines(), 24);
+        assert_eq!(bounds.total_lines(), bounds.screen_lines());
+        assert_eq!(bounds.columns(), 80);
+
+        let window_size = WindowSize::from(bounds);
+        assert_eq!(window_size.num_lines, 24);
+        assert_eq!(window_size.num_cols, 80);
+        assert_eq!(window_size.cell_width, 10);
+        assert_eq!(window_size.cell_height, 20);
+    }
+}

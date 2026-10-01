@@ -188,6 +188,27 @@ mod tests {
     }
 
     #[test]
+    fn special_indices_and_spec_colors() {
+        let theme = Theme::default();
+        assert_eq!(theme.get_color_at_index(256), theme.terminal_foreground);
+        assert_eq!(theme.get_color_at_index(257), theme.terminal_background);
+        assert_eq!(theme.get_color_at_index(258), theme.cursor);
+        assert_eq!(theme.get_color_at_index(259), theme.ansi_dim[0]);
+        assert_eq!(theme.get_color_at_index(266), theme.ansi_dim[7]);
+        assert_eq!(theme.get_color_at_index(267), theme.bright_foreground);
+        assert_eq!(theme.get_color_at_index(268), theme.ansi[0]);
+        assert_eq!(theme.get_color_at_index(999), gpui::black());
+
+        let spec = Color::Spec(alacritty_terminal::vte::ansi::Rgb {
+            r: 0x12,
+            g: 0x34,
+            b: 0x56,
+        });
+        assert_eq!(theme.convert_color(&spec), rgb(0x123456).into());
+        assert_eq!(theme.convert_color(&Color::Indexed(1)), theme.ansi[1]);
+    }
+
+    #[test]
     fn named_colors_use_theme() {
         let theme = Theme::default();
         assert_eq!(
@@ -349,6 +370,108 @@ mod tests {
                 hex(theme.cursor),
                 value["cursor"].as_str().unwrap().to_lowercase()
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod close_dialog_theme {
+
+    use gpui::rgb;
+
+    use crate::theme::{DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, Theme};
+
+    const KEYS: [&str; 2] = ["danger_button", "danger_button_text"];
+
+    #[test]
+    fn both_bundled_themes_define_danger_colors() {
+        for (name, json) in [("dark", DEFAULT_DARK_THEME), ("light", DEFAULT_LIGHT_THEME)] {
+            let raw: serde_json_lenient::Value = serde_json_lenient::from_str(json).unwrap();
+            for key in KEYS {
+                assert!(raw[key].is_string(), "{name} theme misses {key}");
+            }
+        }
+    }
+
+    #[test]
+    fn bundled_danger_colors_parse_into_theme() {
+        for (dark, json) in [(true, DEFAULT_DARK_THEME), (false, DEFAULT_LIGHT_THEME)] {
+            let raw: serde_json_lenient::Value = serde_json_lenient::from_str(json).unwrap();
+            let theme = Theme::bundled(dark);
+            for (key, got) in [
+                ("danger_button", theme.danger_button),
+                ("danger_button_text", theme.danger_button_text),
+            ] {
+                let single = format!(r#"{{"{key}": {}}}"#, raw[key]);
+                let expected = Theme::parse(&single, !dark).unwrap();
+                let expected = if key == "danger_button" {
+                    expected.danger_button
+                } else {
+                    expected.danger_button_text
+                };
+                assert_eq!(
+                    got, expected,
+                    "{key} in dark={dark} not read from bundled file"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn danger_button_is_readable_on_itself() {
+        for dark in [true, false] {
+            let theme = Theme::bundled(dark);
+            assert_ne!(theme.danger_button, theme.danger_button_text);
+        }
+    }
+
+    #[test]
+    fn user_can_override_danger_colors() {
+        for dark in [true, false] {
+            let theme = Theme::parse(
+                r##"{"danger_button": "#112233", "danger_button_text": "#445566"}"##,
+                dark,
+            )
+            .unwrap();
+            let mut expected = Theme::bundled(dark);
+            expected.danger_button = rgb(0x112233).into();
+            expected.danger_button_text = rgb(0x445566).into();
+            assert_eq!(theme, expected);
+        }
+    }
+
+    #[test]
+    fn overriding_one_danger_color_keeps_the_other() {
+        for dark in [true, false] {
+            let theme = Theme::parse(r##"{"danger_button": "#010203"}"##, dark).unwrap();
+            assert_eq!(theme.danger_button, rgb(0x010203).into());
+            assert_eq!(
+                theme.danger_button_text,
+                Theme::bundled(dark).danger_button_text
+            );
+            let theme = Theme::parse(r##"{"danger_button_text": "#0a0b0c"}"##, dark).unwrap();
+            assert_eq!(theme.danger_button_text, rgb(0x0a0b0c).into());
+            assert_eq!(theme.danger_button, Theme::bundled(dark).danger_button);
+        }
+    }
+
+    #[test]
+    fn old_theme_without_danger_keys_still_parses() {
+        let theme = Theme::parse(r##"{"cursor": "#abcdef"}"##, true).unwrap();
+        assert_eq!(theme.danger_button, Theme::bundled(true).danger_button);
+        assert_eq!(
+            theme.danger_button_text,
+            Theme::bundled(true).danger_button_text
+        );
+    }
+
+    #[test]
+    fn invalid_danger_colors_are_rejected() {
+        for key in KEYS {
+            for value in [r#""nope""#, "null", "1"] {
+                let json = format!(r#"{{"{key}": {value}}}"#);
+                assert!(Theme::parse(&json, true).is_err(), "accepted {json}");
+            }
         }
     }
 }
