@@ -4,10 +4,10 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::selection::SelectionType;
 use gpui::{
-    App, ClipboardItem, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    KeyDownEvent, Modifiers, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
-    Point, Render, ScrollDelta, ScrollWheelEvent, Styled, Subscription, Task, Window, actions, div,
-    px,
+    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, KeyDownEvent, Modifiers, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Styled, Subscription,
+    Task, Window, actions, div, px,
 };
 
 use crate::{
@@ -17,6 +17,12 @@ use crate::{
 };
 
 actions!(terminal, [Copy, Paste]);
+
+/// clipboard change made from the view, so the workspace can notify about it
+pub enum ClipboardEvent {
+    Copied(String),
+    Pasted,
+}
 
 // default terminal scroll_multiplier
 const SCROLL_MULTIPLIER: f32 = 2.;
@@ -338,7 +344,8 @@ impl TerminalView {
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = self.terminal.read(cx).selection_text() {
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            cx.emit(ClipboardEvent::Copied(text));
         }
     }
 
@@ -346,9 +353,12 @@ impl TerminalView {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             self.scroll_animation = None;
             self.terminal.update(cx, |term, _| term.paste(&text));
+            cx.emit(ClipboardEvent::Pasted);
         }
     }
 }
+
+impl EventEmitter<ClipboardEvent> for TerminalView {}
 
 impl Focusable for TerminalView {
     fn focus_handle(&self, _: &App) -> FocusHandle {

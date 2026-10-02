@@ -33,7 +33,7 @@ use crate::{
     theme::Theme,
     ui::{
         command_palette::{About, CloseConfirmed, CloseTarget, CommandPalette, ConfirmClose},
-        terminal_view::TerminalView,
+        terminal_view::{ClipboardEvent, TerminalView},
     },
 };
 
@@ -89,7 +89,7 @@ struct Tab {
     ready_task: Task<()>,
     /// input a command queued before the shell was ready
     pending_input: Vec<u8>,
-    _subscription: Subscription,
+    _subscriptions: [Subscription; 2],
 }
 
 /// pane grouping its own tabs and active terminal
@@ -530,6 +530,11 @@ impl Workspace {
                 }
             }
         });
+        let clipboard_subscription =
+            cx.subscribe(&view, |this, _, event: &ClipboardEvent, cx| match event {
+                ClipboardEvent::Copied(text) => this.notify_copied(text, cx),
+                ClipboardEvent::Pasted => this.notify_pasted(cx),
+            });
 
         let Some(pane) = self.pane_mut(pane_id) else {
             return;
@@ -545,7 +550,7 @@ impl Workspace {
             ready: false,
             ready_task: Task::ready(()),
             pending_input: Vec::new(),
-            _subscription: subscription,
+            _subscriptions: [subscription, clipboard_subscription],
         });
         let ix = pane.tabs.len() - 1;
         if activate {
@@ -1185,19 +1190,19 @@ impl Workspace {
                 CommandAction::PickTab => self.open_tab_picker(window, cx),
                 CommandAction::Copy => {
                     let selection = self.terminal_at(pane, ix, cx).read(cx).selection_text();
-                    let text = match selection {
+                    match selection {
                         Some(text) => {
-                            cx.write_to_clipboard(ClipboardItem::new_string(text));
-                            "copied to clipboard"
+                            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                            self.notify_copied(&text, cx);
                         }
-                        None => "nothing selected to copy",
-                    };
-                    self.show_notification(text, None, cx);
+                        None => self.show_notification("nothing selected to copy", None, cx),
+                    }
                 }
                 CommandAction::Paste => {
                     if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                         self.terminal_at(pane, ix, cx)
                             .update(cx, |terminal, _| terminal.paste(&text));
+                        self.notify_pasted(cx);
                     }
                 }
                 CommandAction::ScrollUp(lines) => self
@@ -3137,7 +3142,10 @@ mod tests {
         ws.update(cx, |ws, _| {
             ws.notifications
                 .iter()
-                .map(|notification| notification.text.clone())
+                .map(|notification| match &notification.detail {
+                    Some(detail) => format!("{} {detail}", notification.text),
+                    None => notification.text.clone(),
+                })
                 .collect()
         })
     }
@@ -3189,6 +3197,41 @@ mod tests {
             notifications(&ws, cx),
             ["keybindings reloaded", "nothing selected to copy"]
         );
+    }
+
+    #[gpui::test]
+    fn copy_and_paste_keys_notify(cx: &mut TestAppContext) {
+        let settings =
+            Settings::parse(r#"{"notifications": {"timeout": 0, "copy": true, "paste": true}}"#)
+                .unwrap();
+        let (ws, cx) = open_with_settings(cx, 1, "{}", settings);
+        print_line(&ws, cx, "pick these words");
+        let position = cell_of(&ws, cx, "pick these words", 12, false);
+        click(cx, position, 2);
+        release(cx, position);
+        cx.simulate_keystrokes("ctrl-shift-c");
+        cx.simulate_keystrokes("ctrl-shift-v");
+        cx.run_until_parked();
+        assert_eq!(
+            notifications(&ws, cx),
+            ["copied words", "pasted from clipboard"]
+        );
+    }
+
+    #[gpui::test]
+    fn copy_and_paste_notifications_can_be_turned_off(cx: &mut TestAppContext) {
+        let settings =
+            Settings::parse(r#"{"notifications": {"copy": false, "paste": false}}"#).unwrap();
+        let (ws, cx) = open_with_settings(cx, 1, "{}", settings);
+        print_line(&ws, cx, "pick these words");
+        let position = cell_of(&ws, cx, "pick these words", 12, false);
+        click(cx, position, 2);
+        release(cx, position);
+        cx.simulate_keystrokes("ctrl-shift-c");
+        run_actions(&ws, cx, r#""copy", "paste""#);
+        cx.simulate_keystrokes("ctrl-shift-v");
+        cx.run_until_parked();
+        assert!(notifications(&ws, cx).is_empty());
     }
 
     #[gpui::test]

@@ -75,6 +75,10 @@ pub struct NotificationSettings {
     pub enable: bool,
     /// seconds a notification stays, 0 keeps it until clicked
     pub timeout: f32,
+    /// notify when text is copied, showing it shortened
+    pub copy: bool,
+    /// notify when text is pasted
+    pub paste: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -1207,6 +1211,8 @@ mod notifications_settings {
         let n = &raw["notifications"];
         assert!(n["enable"].is_boolean(), "missing notifications.enable");
         assert!(n["timeout"].is_number(), "missing notifications.timeout");
+        assert!(n["copy"].is_boolean(), "missing notifications.copy");
+        assert!(n["paste"].is_boolean(), "missing notifications.paste");
     }
 
     #[test]
