@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{settings::TabTitleBlock, terminal::foreground_process};
+use crate::{settings::TabTitleBlock, terminal::ForegroundProcess};
 
 // a hung command would freeze every tab title, so it is abandoned after this
 const EXEC_TIMEOUT: Duration = Duration::from_secs(2);
@@ -20,19 +20,20 @@ pub(super) struct TitleInputs {
     pub profile_icon: Option<String>,
 }
 
-/// join blocks into a title, may block on /proc reads and exec commands
-pub(super) fn build_title(blocks: &[TabTitleBlock], inputs: &TitleInputs) -> String {
-    let process = foreground_process(inputs.shell_pid);
-    let cwd = process.as_ref().and_then(|process| process.cwd.as_deref());
+/// join blocks into a title, may block on exec commands
+pub(super) fn build_title(
+    blocks: &[TabTitleBlock],
+    inputs: &TitleInputs,
+    process: Option<&ForegroundProcess>,
+) -> String {
+    let cwd = process.and_then(|process| process.cwd.as_deref());
     let mut title = String::new();
     for block in blocks {
         match block {
             TabTitleBlock::Number => title.push_str(&inputs.number.to_string()),
             TabTitleBlock::Prompt => title.push_str(&prompt()),
             TabTitleBlock::Folder => title.push_str(&cwd.map(folder_name).unwrap_or_default()),
-            TabTitleBlock::Command => {
-                title.push_str(process.as_ref().map_or("", |process| &process.name))
-            }
+            TabTitleBlock::Command => title.push_str(process.map_or("", |process| &process.name)),
             TabTitleBlock::Title => title.push_str(&inputs.title),
             TabTitleBlock::Text(text) => title.push_str(text),
             TabTitleBlock::Exec(command) => title.push_str(&exec(command, cwd).unwrap_or_default()),
@@ -129,6 +130,7 @@ fn exec(command: &str, cwd: Option<&Path>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::foreground_process;
 
     fn build(blocks: &[TabTitleBlock]) -> String {
         let inputs = TitleInputs {
@@ -137,7 +139,11 @@ mod tests {
             title: "vim".into(),
             profile_icon: None,
         };
-        build_title(blocks, &inputs)
+        build_title(
+            blocks,
+            &inputs,
+            foreground_process(inputs.shell_pid).as_ref(),
+        )
     }
 
     #[test]

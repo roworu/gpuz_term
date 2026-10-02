@@ -15,25 +15,25 @@ use crate::{
     theme::Theme,
 };
 
+// cell flags that change how its text is drawn, the rest only matter to the grid
+const STYLE_FLAGS: Flags = Flags::BOLD
+    .union(Flags::ITALIC)
+    .union(Flags::DIM)
+    .union(Flags::ALL_UNDERLINES)
+    .union(Flags::STRIKEOUT);
+
 /// adjacent cells with same style, shaped and painted as one line
 pub(super) struct BatchedTextRun {
     line: i32,
     column: i32,
     text: String,
     cell_count: usize,
+    /// foreground and style flags `style` was built from, cheaper to compare than the style
+    key: (Color, Flags),
     style: TextRun,
 }
 
 impl BatchedTextRun {
-    fn can_append(&self, line: i32, column: i32, style: &TextRun) -> bool {
-        self.line == line
-            && self.column + self.cell_count as i32 == column
-            && self.style.font == style.font
-            && self.style.color == style.color
-            && self.style.underline == style.underline
-            && self.style.strikethrough == style.strikethrough
-    }
-
     fn push(&mut self, c: char, zerowidth: Option<&[char]>) {
         self.text.push(c);
         self.style.len += c.len_utf8();
@@ -141,16 +141,27 @@ pub(super) fn layout_grid(
             continue;
         }
 
-        let style = cell_style(cell, fg, font, theme);
+        // most cells continue the run before them, so the style is only built for new runs
+        let key = (fg, cell.flags & STYLE_FLAGS);
         match runs.last_mut() {
-            Some(run) if run.can_append(line, column, &style) => run.push(cell.c, cell.zerowidth()),
+            Some(run)
+                if run.key == key
+                    && run.line == line
+                    && run.column + run.cell_count as i32 == column =>
+            {
+                run.push(cell.c, cell.zerowidth())
+            }
             _ => {
                 let mut run = BatchedTextRun {
                     line,
                     column,
                     text: String::new(),
                     cell_count: 0,
-                    style: TextRun { len: 0, ..style },
+                    key,
+                    style: TextRun {
+                        len: 0,
+                        ..cell_style(cell, fg, font, theme)
+                    },
                 };
                 run.push(cell.c, cell.zerowidth());
                 runs.push(run);

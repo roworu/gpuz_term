@@ -50,7 +50,7 @@ pub struct TerminalView {
     last_mouse_cell: Option<(usize, usize)>,
     /// drives scrollbar auto hide
     last_scroll: Option<Instant>,
-    /// history seen on the last wakeup, growth means output scrolled the view
+    /// history seen on the last render, growth means output scrolled the view
     history_size: usize,
     /// running smooth scroll, advanced on every frame
     scroll_animation: Option<ScrollAnimation>,
@@ -64,14 +64,8 @@ impl TerminalView {
     pub fn new(terminal: Entity<Terminal>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
-            cx.subscribe(&terminal, |this, _, event: &Event, cx| {
+            cx.subscribe(&terminal, |_, _, event: &Event, cx| {
                 if *event == Event::Wakeup {
-                    // output pushing lines into history scrolls the view too
-                    let history_size = this.terminal.read(cx).history_size();
-                    if history_size > this.history_size {
-                        this.show_scrollbar(cx);
-                    }
-                    this.history_size = history_size;
                     cx.notify();
                 }
             }),
@@ -376,6 +370,17 @@ impl Render for TerminalView {
                 window.request_animation_frame();
             }
         }
+        // synced here rather than on every wakeup, so busy output does not take the term lock
+        // from the io thread more than once a frame. prepaint syncs again only after a resize
+        let history_size = self.terminal.update(cx, |term, _| {
+            term.sync();
+            term.last_content.history_size
+        });
+        // output pushing lines into history scrolls the view too
+        if history_size > self.history_size {
+            self.show_scrollbar(cx);
+        }
+        self.history_size = history_size;
         div()
             .id("terminal-view")
             .size_full()

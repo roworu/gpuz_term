@@ -163,22 +163,27 @@ impl LayoutNode {
         }
     }
 
-    /// pane ids in layout order
-    fn pane_ids(&self) -> Vec<usize> {
-        let mut ids = Vec::new();
-        self.collect_pane_ids(&mut ids);
-        ids
+    /// panes in layout order
+    fn panes(&self) -> Vec<&Pane> {
+        let mut panes = Vec::new();
+        self.collect_panes(&mut panes);
+        panes
     }
 
-    fn collect_pane_ids(&self, ids: &mut Vec<usize>) {
+    fn collect_panes<'a>(&'a self, panes: &mut Vec<&'a Pane>) {
         match self {
-            Self::Leaf(pane) => ids.push(pane.id),
+            Self::Leaf(pane) => panes.push(pane),
             Self::Split { first, second, .. } => {
-                first.collect_pane_ids(ids);
-                second.collect_pane_ids(ids);
+                first.collect_panes(panes);
+                second.collect_panes(panes);
             }
             Self::Empty => {}
         }
+    }
+
+    /// pane ids in layout order
+    fn pane_ids(&self) -> Vec<usize> {
+        self.panes().iter().map(|pane| pane.id).collect()
     }
 
     /// split the leaf `target` at `side`, `new_pane` lands on that side
@@ -323,19 +328,27 @@ impl Workspace {
                 let (titles, window_title) = cx
                     .background_executor()
                     .spawn(async move {
-                        let window_title = inputs
-                            .get(active)
-                            .map(|(_, inputs)| tab_title::build_title(&window_blocks, inputs))
-                            .unwrap_or_default();
+                        let mut window_title = String::new();
                         let titles = inputs
                             .into_iter()
-                            .map(|(id, inputs)| {
-                                let title = tab_title::build_title(&blocks, &inputs);
+                            .enumerate()
+                            .map(|(ix, (id, inputs))| {
+                                // read once, the window title, tab title and icon all need it
+                                let process = foreground_process(inputs.shell_pid);
+                                if ix == active {
+                                    window_title = tab_title::build_title(
+                                        &window_blocks,
+                                        &inputs,
+                                        process.as_ref(),
+                                    );
+                                }
+                                let title =
+                                    tab_title::build_title(&blocks, &inputs, process.as_ref());
                                 let icon = tab_icon::tab_icon(
                                     &icon_settings,
                                     &icons,
                                     inputs.profile_icon.as_deref(),
-                                    inputs.shell_pid,
+                                    process,
                                 );
                                 (id, title, icon)
                             })
@@ -414,13 +427,13 @@ impl Workspace {
 
     /// pane and tab index of the tab with this view id
     fn find_id(&self, id: EntityId) -> Option<(usize, usize)> {
-        for pane_id in self.layout.pane_ids() {
-            let pane = self.pane(pane_id).expect("pane id comes from the layout");
-            if let Some(ix) = pane.tabs.iter().position(|tab| tab.view.entity_id() == id) {
-                return Some((pane_id, ix));
-            }
-        }
-        None
+        self.layout.panes().into_iter().find_map(|pane| {
+            let ix = pane
+                .tabs
+                .iter()
+                .position(|tab| tab.view.entity_id() == id)?;
+            Some((pane.id, ix))
+        })
     }
 
     fn find_view(&self, view: &Entity<TerminalView>) -> Option<(usize, usize)> {
@@ -897,19 +910,13 @@ impl Workspace {
         if !Settings::get(cx).close_running_tab_warn {
             return false;
         }
-        let mut names: Vec<String> = Vec::new();
-        for pane_id in self.layout.pane_ids() {
-            let count = self
-                .pane(pane_id)
-                .expect("pane id comes from the layout")
-                .tabs
-                .len();
-            for ix in 0..count {
-                if let Some(program) = self.running_program(pane_id, ix, cx) {
-                    names.push(program);
-                }
-            }
-        }
+        let names: Vec<String> = self
+            .layout
+            .panes()
+            .into_iter()
+            .flat_map(|pane| (0..pane.tabs.len()).map(move |ix| (pane.id, ix)))
+            .filter_map(|(pane_id, ix)| self.running_program(pane_id, ix, cx))
+            .collect();
         if names.is_empty() {
             return false;
         }
@@ -1003,23 +1010,19 @@ impl Workspace {
 
     /// true when some tab still in the layout is part of `target`
     fn any_target_present(&self, target: &CloseTarget) -> bool {
-        self.layout.pane_ids().into_iter().any(|pane_id| {
-            let pane = self.pane(pane_id).expect("pane id comes from the layout");
-            pane.tabs
-                .iter()
-                .any(|tab| target.contains(tab.view.entity_id()))
-        })
+        self.layout
+            .panes()
+            .into_iter()
+            .flat_map(|pane| &pane.tabs)
+            .any(|tab| target.contains(tab.view.entity_id()))
     }
 
     /// read theme files again and recolor the ui and every terminal
     fn reload_themes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         Theme::apply(window.appearance(), cx);
-        for pane_id in self.layout.pane_ids() {
-            let pane = self.pane(pane_id).expect("pane id comes from the layout");
-            for tab in &pane.tabs {
-                let terminal = tab.view.read(cx).terminal().clone();
-                terminal.update(cx, |terminal, _| terminal.apply_theme(window.appearance()));
-            }
+        for tab in self.layout.panes().into_iter().flat_map(|pane| &pane.tabs) {
+            let terminal = tab.view.read(cx).terminal().clone();
+            terminal.update(cx, |terminal, _| terminal.apply_theme(window.appearance()));
         }
         // terminal views may be cached, force redraw everything with new colors
         window.refresh();
@@ -1305,8 +1308,7 @@ impl Workspace {
         let settings = Settings::get(cx);
         let mut inputs = Vec::new();
         let mut active = 0;
-        for pane_id in self.layout.pane_ids() {
-            let pane = self.pane(pane_id).expect("pane id comes from the layout");
+        for pane in self.layout.panes() {
             for (ix, tab) in pane.tabs.iter().enumerate() {
                 if pane.id == self.focused && ix == pane.active {
                     active = inputs.len();

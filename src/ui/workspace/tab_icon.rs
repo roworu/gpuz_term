@@ -4,26 +4,24 @@ use std::path::Path;
 
 use crate::{
     settings::{TabIconSettings, TabIcons},
-    terminal::{ForegroundProcess, children, foreground_process, process_info},
+    terminal::{ForegroundProcess, children, process_info},
 };
 
 // sudo runs the command under a second sudo, a few levels cover every wrapper chain seen in practice
 const MAX_WRAPPER_DEPTH: usize = 4;
 
-/// icon of a tab, may block on /proc reads
+/// icon of a tab running `process` in the foreground, may block on /proc reads
 pub(super) fn tab_icon(
     settings: &TabIconSettings,
     icons: &TabIcons,
     profile_icon: Option<&str>,
-    shell_pid: u32,
+    process: Option<ForegroundProcess>,
 ) -> String {
     if let Some(icon) = profile_icon {
         return icon.to_owned();
     }
-    settings
-        .dynamic
-        .then(|| foreground_process(shell_pid))
-        .flatten()
+    process
+        .filter(|_| settings.dynamic)
         .map(|process| unwrap(icons, process))
         .and_then(|process| program_icon(icons, &process))
         .unwrap_or(&settings.default)
@@ -65,6 +63,7 @@ fn program_icon<'a>(icons: &'a TabIcons, process: &ForegroundProcess) -> Option<
 mod tests {
     use super::*;
     use crate::settings::Settings;
+    use crate::terminal::foreground_process;
     use crate::terminal::{Kill, spawn};
 
     fn settings(json: &str) -> TabIconSettings {
@@ -162,16 +161,35 @@ mod tests {
         let icons = icons_for_self("X");
         let settings = settings("{}");
         let pid = std::process::id();
-        assert_eq!(tab_icon(&settings, &icons, None, pid), "X");
-        assert_eq!(tab_icon(&settings, &icons, Some("P"), pid), "P");
-        assert_eq!(tab_icon(&settings, &icons, Some("P"), u32::MAX - 1), "P");
+        assert_eq!(
+            tab_icon(&settings, &icons, None, foreground_process(pid)),
+            "X"
+        );
+        assert_eq!(
+            tab_icon(&settings, &icons, Some("P"), foreground_process(pid)),
+            "P"
+        );
+        assert_eq!(
+            tab_icon(
+                &settings,
+                &icons,
+                Some("P"),
+                foreground_process(u32::MAX - 1)
+            ),
+            "P"
+        );
     }
 
     #[test]
     fn disabled_dynamic_icons_use_default() {
         let settings = settings(r#"{"tab_icon": {"dynamic": false, "default": "D"}}"#);
         assert_eq!(
-            tab_icon(&settings, &icons_for_self("X"), None, std::process::id()),
+            tab_icon(
+                &settings,
+                &icons_for_self("X"),
+                None,
+                foreground_process(std::process::id())
+            ),
             "D"
         );
     }
@@ -180,7 +198,12 @@ mod tests {
     fn missing_process_uses_default() {
         let settings = settings(r#"{"tab_icon": {"default": "D"}}"#);
         assert_eq!(
-            tab_icon(&settings, &TabIcons::default(), None, u32::MAX - 1),
+            tab_icon(
+                &settings,
+                &TabIcons::default(),
+                None,
+                foreground_process(u32::MAX - 1)
+            ),
             "D"
         );
     }
@@ -369,7 +392,7 @@ mod tab_icon_logic {
     }
 
     fn icon_pid(settings: &TabIconSettings, icons: &TabIcons, pid: u32) -> String {
-        tab_icon(settings, icons, None, pid)
+        tab_icon(settings, icons, None, foreground_process(pid))
     }
 
     fn icon_name(settings: &TabIconSettings, icons: &TabIcons, name: &str) -> String {
@@ -561,17 +584,39 @@ mod tab_icon_logic {
         let settings = dynamic();
         let icons = fixture();
         let ssh = named("ssh");
-        assert_eq!(tab_icon(&settings, &icons, Some("P"), ssh.pid()), "P");
+        assert_eq!(
+            tab_icon(&settings, &icons, Some("P"), foreground_process(ssh.pid())),
+            "P"
+        );
         let htop = named("htop");
-        assert_eq!(tab_icon(&settings, &icons, Some("P"), htop.pid()), "P");
-        assert_eq!(tab_icon(&settings, &icons, Some("P"), u32::MAX - 1), "P");
+        assert_eq!(
+            tab_icon(&settings, &icons, Some("P"), foreground_process(htop.pid())),
+            "P"
+        );
+        assert_eq!(
+            tab_icon(
+                &settings,
+                &icons,
+                Some("P"),
+                foreground_process(u32::MAX - 1)
+            ),
+            "P"
+        );
     }
 
     #[test]
     fn profile_icon_is_kept_with_dynamic_disabled() {
         let settings = tab_settings(false, "left", DEFAULT);
         let p = named("bash");
-        assert_eq!(tab_icon(&settings, &fixture(), Some("P"), p.pid()), "P");
+        assert_eq!(
+            tab_icon(
+                &settings,
+                &fixture(),
+                Some("P"),
+                foreground_process(p.pid())
+            ),
+            "P"
+        );
     }
 
     // user groups (tab_icons.jsonc)
@@ -805,7 +850,7 @@ mod tab_icon_wrappers {
     use super::tab_icon;
     use crate::{
         settings::{Settings, TabIconSettings, TabIcons},
-        terminal::{children, process_info},
+        terminal::{children, foreground_process, process_info},
     };
 
     const DEFAULT: &str = "D";
@@ -938,7 +983,7 @@ mod tab_icon_wrappers {
     }
 
     fn icon_of(icons: &TabIcons, pid: u32) -> String {
-        tab_icon(&dynamic(), icons, None, pid)
+        tab_icon(&dynamic(), icons, None, foreground_process(pid))
     }
 
     // parsing wrappers
@@ -1203,7 +1248,12 @@ mod tab_icon_wrappers {
         let tool = program_named(&dir, "tool");
         let p = run_under(&wrapa, &format!("{} 30", quote(&tool)), 1);
         assert_eq!(
-            tab_icon(&tab_settings(false), &fixture(), None, p.pid()),
+            tab_icon(
+                &tab_settings(false),
+                &fixture(),
+                None,
+                foreground_process(p.pid())
+            ),
             DEFAULT
         );
     }
@@ -1214,7 +1264,15 @@ mod tab_icon_wrappers {
         let wrapa = shell_named(&dir, "wrapa");
         let tool = program_named(&dir, "tool");
         let p = run_under(&wrapa, &format!("{} 30", quote(&tool)), 1);
-        assert_eq!(tab_icon(&dynamic(), &fixture(), Some("P"), p.pid()), "P");
+        assert_eq!(
+            tab_icon(
+                &dynamic(),
+                &fixture(),
+                Some("P"),
+                foreground_process(p.pid())
+            ),
+            "P"
+        );
     }
 
     #[test]
