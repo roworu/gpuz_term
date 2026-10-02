@@ -34,7 +34,16 @@ use crate::{
     },
 };
 
-actions!(workspace, [NewTab, CloseTab, NextTab, ToggleCommandPalette]);
+actions!(
+    workspace,
+    [
+        NewTab,
+        CloseTab,
+        NextTab,
+        ToggleCommandPalette,
+        ToggleFullscreen
+    ]
+);
 
 /// activate tab at this 0 based index
 #[derive(Clone, PartialEq, Action)]
@@ -1391,6 +1400,15 @@ impl Workspace {
         if action.0 < count {
             self.activate_tab(pane, action.0, window, cx);
         }
+    }
+
+    fn toggle_fullscreen(
+        &mut self,
+        _: &ToggleFullscreen,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        window.toggle_fullscreen();
     }
 }
 
@@ -3580,6 +3598,16 @@ mod tests {
         assert!(dialog(&ws, cx).is_none());
         assert_eq!(views(&ws, cx).len(), 2);
         assert_eq!(current(&ws, cx), 0);
+    }
+
+    #[gpui::test]
+    fn f11_toggles_fullscreen(cx: &mut TestAppContext) {
+        let (_ws, cx) = open(cx, 1);
+        assert!(!cx.update(|window, _| window.is_fullscreen()));
+        type_keys(cx, "f11");
+        assert!(cx.update(|window, _| window.is_fullscreen()));
+        type_keys(cx, "f11");
+        assert!(!cx.update(|window, _| window.is_fullscreen()));
     }
 
     #[gpui::test]

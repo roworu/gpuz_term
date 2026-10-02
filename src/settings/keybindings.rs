@@ -9,7 +9,7 @@ use super::{config_dir, load_file, parse_over};
 use crate::cli::Cli;
 use crate::ui::{
     terminal_view::{Copy, Paste},
-    workspace::{ActivateTab, CloseTab, NewTab, NextTab, ToggleCommandPalette},
+    workspace::{ActivateTab, CloseTab, NewTab, NextTab, ToggleCommandPalette, ToggleFullscreen},
 };
 
 /// action name to its keys, `None` when the action is disabled
@@ -34,6 +34,7 @@ fn binding(action: &str, keys: &str) -> Option<KeyBinding> {
         "copy" => KeyBinding::new(keys, Copy, Some("Terminal")),
         "paste" => KeyBinding::new(keys, Paste, Some("Terminal")),
         "command_palette" => KeyBinding::new(keys, ToggleCommandPalette, None),
+        "toggle_fullscreen" => KeyBinding::new(keys, ToggleFullscreen, None),
         _ => {
             let number: usize = action.strip_prefix("activate_tab_")?.parse().ok()?;
             KeyBinding::new(keys, ActivateTab(number.checked_sub(1)?), None)
@@ -103,7 +104,8 @@ mod tests {
         assert_eq!(keys.0["next_tab"].as_deref(), Some("ctrl-tab"));
         assert_eq!(keys.0["copy"].as_deref(), Some("ctrl-shift-c"));
         assert_eq!(keys.0["activate_tab_9"].as_deref(), Some("alt-9"));
-        assert_eq!(keys.bindings().len(), 15);
+        assert_eq!(keys.0["toggle_fullscreen"].as_deref(), Some("f11"));
+        assert_eq!(keys.bindings().len(), 16);
     }
 
     #[test]
@@ -133,7 +135,7 @@ mod tests {
         assert_eq!(keys.0["new_tab"].as_deref(), Some("ctrl-shift-n"));
         assert_eq!(keys.0["close_tab"], None);
         assert_eq!(keys.0["paste"].as_deref(), Some("ctrl-shift-v"));
-        assert_eq!(keys.bindings().len(), 15);
+        assert_eq!(keys.bindings().len(), 16);
     }
 
     #[test]
@@ -184,7 +186,7 @@ mod tests {
     fn activate_tab_10_adds_a_binding_for_index_9() {
         let keys = Keybindings::parse(r#"{"activate_tab_10": "alt-0"}"#).unwrap();
         let bindings = keys.bindings();
-        assert_eq!(bindings.len(), 16);
+        assert_eq!(bindings.len(), 17);
         let strokes = |ix: usize| -> Vec<Keystroke> {
             let found: Vec<_> = bindings
                 .iter()
@@ -211,6 +213,7 @@ mod tests {
             "copy",
             "paste",
             "command_palette",
+            "toggle_fullscreen",
             "activate_tab_1",
         ] {
             let line = DEFAULT_KEYBINDINGS

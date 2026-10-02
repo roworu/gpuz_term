@@ -56,6 +56,19 @@ def test_resize_updates_pty(app_factory, w, h):
     assert close_to(tuple(img[-3, 3]), DARK["terminal_background"])
 
 
+def test_f11_toggles_fullscreen(app_factory):
+    """f11 makes the window fullscreen, a second press restores its size"""
+    app = dark_app(app_factory)
+    before = app.size()
+    app.key("F11")
+    app.wait(app.fullscreen, msg="fullscreen on")
+    app.wait(lambda: app.size() != before, msg="fullscreen geometry")
+    app.snap("fullscreen")
+    app.key("F11")
+    app.wait(lambda: not app.fullscreen(), msg="fullscreen off")
+    app.wait(lambda: app.size() == before, msg="size restored")
+
+
 def test_content_survives_resize(app_factory):
     """text printed before a resize is still on screen after it"""
     app = dark_app(app_factory, script="printf '\\033[41m%s\\033[0m\\n' '          '")

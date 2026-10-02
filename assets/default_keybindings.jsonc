@@ -27,6 +27,8 @@
   "paste": "ctrl-shift-v",
   // open command palette
   "command_palette": "ctrl-shift-p",
+  // toggle fullscreen
+  "toggle_fullscreen": "f11",
   // switch to tab by its position, any "activate_tab_<n>" with n from 1 up can be added
   "activate_tab_1": "alt-1",
   "activate_tab_2": "alt-2",

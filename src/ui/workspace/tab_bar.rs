@@ -542,6 +542,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::next_tab))
             .on_action(cx.listener(Self::activate_tab_action))
             .on_action(cx.listener(Self::toggle_command_palette))
+            .on_action(cx.listener(Self::toggle_fullscreen))
             .relative()
             .size_full()
             .flex()

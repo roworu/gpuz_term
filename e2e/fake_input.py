@@ -37,6 +37,10 @@ ASCII_NAMES = {
 NAMED = ["Return", "Escape", "Tab", "BackSpace", "Delete", "Left", "Right", "Up", "Down", "Home",
          "End", "Page_Up", "Page_Down", "Insert"] + [f"F{n}" for n in range(1, 13)]
 
+# gpui guesses ascii from xkb keycodes aliasing us letters (24..61), which
+# would turn synthesized function keys into characters, so start above that
+KEYCODE_OFFSET = 62
+
 
 def keysym_name(ch: str) -> str:
     if ch in ASCII_NAMES:
@@ -131,9 +135,9 @@ class Keyboard:
         if not missing and self.syms:
             return
         self.syms += missing
-        codes = "".join(f"<K{i}> = {i + 9};" for i in range(len(self.syms)))
+        codes = "".join(f"<K{i}> = {i + KEYCODE_OFFSET};" for i in range(len(self.syms)))
         symbols = "".join(f"key <K{i}> {{[ {name} ]}};" for i, name in enumerate(self.syms))
-        keymap = (f'xkb_keymap {{ xkb_keycodes "e2e" {{ minimum = 8; maximum = {len(self.syms) + 9}; {codes} }};'
+        keymap = (f'xkb_keymap {{ xkb_keycodes "e2e" {{ minimum = 8; maximum = {len(self.syms) + KEYCODE_OFFSET - 1}; {codes} }};'
                   ' xkb_types "e2e" { include "complete" }; xkb_compatibility "e2e" { include "complete" };'
                   f' xkb_symbols "e2e" {{ {symbols} }}; }};\n').encode() + b"\0"
         fd = os.memfd_create("keymap")
@@ -149,7 +153,7 @@ class Keyboard:
     def press(self, name: str, mods: int = 0) -> None:
         self.ensure([name])
         # keycodes on the wire are evdev ones, 8 below xkb's
-        key = self.syms.index(name) + 1
+        key = self.syms.index(name) + KEYCODE_OFFSET - 8
         self.modifiers(self.held | mods)
         self.wl.send(self.keyboard, 1, struct.pack("<III", now(), key, 1))
         self.wl.send(self.keyboard, 1, struct.pack("<III", now(), key, 0))

@@ -5,6 +5,7 @@ every App gets its own temp XDG_CONFIG_HOME and HOME, so cases never share confi
 """
 
 import contextlib
+import ctypes
 import io
 import json
 import math
@@ -189,6 +190,32 @@ def session_env() -> dict:
 
 def xdo(*args: str, check: bool = True) -> str:
     return sh("xdotool", *args, check=check, env=session_env())
+
+
+# X11 keysyms of F1..F12, xdotool pads function keys with Alt on this keymap
+FUNCTION_KEYSYMS = {f"F{n}": 0xFFBE + n - 1 for n in range(1, 13)}
+
+
+def x11_keypress(keysym: int) -> None:
+    """press and release a key by keysym through XTest, without xdotool's extra modifiers"""
+    x11 = ctypes.CDLL("libX11.so.6")
+    xtst = ctypes.CDLL("libXtst.so.6")
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XKeysymToKeycode.restype = ctypes.c_ubyte
+    x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    x11.XFlush.argtypes = [ctypes.c_void_p]
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    xtst.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+    display = x11.XOpenDisplay(Session.display.encode())
+    assert display, f"cannot open display {Session.display}"
+    keycode = x11.XKeysymToKeycode(display, keysym)
+    xtst.XTestFakeKeyEvent(display, keycode, 1, 0)
+    x11.XFlush(display)
+    time.sleep(0.05)
+    xtst.XTestFakeKeyEvent(display, keycode, 0, 0)
+    x11.XFlush(display)
+    x11.XCloseDisplay(display)
 
 
 def swaymsg(*args: str, check: bool = True):
@@ -495,6 +522,13 @@ class App:
     def size(self) -> tuple:
         return self.geometry()[2:]
 
+    def fullscreen(self) -> bool:
+        """whether the window manager reports the window as fullscreen"""
+        if BACKEND == "wayland":
+            return bool(self._node().get("fullscreen_mode"))
+        state = sh("xprop", "-id", self.wid, "_NET_WM_STATE", env=session_env())
+        return "_NET_WM_STATE_FULLSCREEN" in state
+
     def shot(self) -> np.ndarray:
         """screenshot of the client area"""
         return screen(*self.geometry())
@@ -561,7 +595,13 @@ class App:
                 Input.send(f"key {','.join(m.lower() for m in mods) or '-'} {name}")
                 time.sleep(0.04)
             return
-        xdo("key", "--clearmodifiers", "--delay", "40", *keys)
+        for combo in keys:
+            # xdotool presses Alt around function keys on this keymap, send them by keycode
+            keysym = FUNCTION_KEYSYMS.get(combo)
+            if keysym is None:
+                xdo("key", "--clearmodifiers", "--delay", "40", combo)
+            else:
+                x11_keypress(keysym)
 
     def type(self, text: str) -> None:
         self.focus()
