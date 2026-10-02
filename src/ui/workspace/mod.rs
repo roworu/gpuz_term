@@ -2569,9 +2569,11 @@ mod tests {
         wait_until(cx, "output never reached history", |cx| {
             terminal.read_with(cx, |t, _| t.history_size() > 0)
         });
-        assert!(
-            visible(cx),
-            "output scrolled the view but the bar stayed hidden"
+
+        wait_until(
+            cx,
+            "output scrolled the view but the bar stayed hidden",
+            visible,
         );
     }
 
