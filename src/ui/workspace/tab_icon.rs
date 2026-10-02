@@ -926,7 +926,7 @@ mod tab_icon_wrappers {
         dir
     }
 
-    fn find(candidates: [&'static str; 2]) -> &'static str {
+    fn find<const N: usize>(candidates: [&'static str; N]) -> &'static str {
         candidates
             .into_iter()
             .find(|p| Path::new(p).exists())
@@ -940,7 +940,11 @@ mod tab_icon_wrappers {
 
     /// `dir/name` linking to sleep, so it runs as a long program showing up as `name`
     fn program_named(dir: &Path, name: &str) -> PathBuf {
-        link(dir, name, find(["/usr/bin/sleep", "/bin/sleep"]))
+        link(
+            dir,
+            name,
+            find(["/usr/bin/gnusleep", "/usr/bin/sleep", "/bin/sleep"]),
+        )
     }
 
     fn link(dir: &Path, name: &str, target: &str) -> PathBuf {
