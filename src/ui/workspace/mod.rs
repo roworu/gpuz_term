@@ -6,7 +6,10 @@ mod tab_bar;
 mod tab_icon;
 mod tab_title;
 
-use std::time::Duration;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use futures::{
     FutureExt, StreamExt,
@@ -53,7 +56,7 @@ pub struct ActivateTab(pub usize);
 // programs, folders and command output change without events, so titles are polled
 const TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 // output also refreshes titles, so short commands like "sudo dnf check-update" show up
-// between polls. busy output asks many times a second, so refreshes are spaced by this
+// between polls. busy output asks many times a second, so its refreshes are spaced by this
 const TITLE_REFRESH_MIN_GAP: Duration = Duration::from_millis(200);
 // how many recently run commands the palette remembers
 const RECENT_COMMANDS_MAX: usize = 10;
@@ -307,7 +310,8 @@ pub struct Workspace {
     /// shown notifications, oldest first
     notifications: Vec<Notification>,
     next_notification_id: usize,
-    refresh_titles: UnboundedSender<()>,
+    /// true asks for titles right away, false lets output driven refreshes wait for the gap
+    refresh_titles: UnboundedSender<bool>,
     _title_task: Task<()>,
     /// set once quitting is decided, so closing the window asks nothing more
     quitting: bool,
@@ -324,38 +328,44 @@ impl Workspace {
                 else {
                     break;
                 };
-                // /proc reads and exec blocks may block, keep them off the main thread
-                let (titles, window_title) = cx
-                    .background_executor()
-                    .spawn(async move {
-                        let mut window_title = String::new();
-                        let titles = inputs
-                            .into_iter()
-                            .enumerate()
-                            .map(|(ix, (id, inputs))| {
-                                // read once, the window title, tab title and icon all need it
-                                let process = foreground_process(inputs.shell_pid);
-                                if ix == active {
-                                    window_title = tab_title::build_title(
-                                        &window_blocks,
-                                        &inputs,
-                                        process.as_ref(),
-                                    );
-                                }
-                                let title =
-                                    tab_title::build_title(&blocks, &inputs, process.as_ref());
-                                let icon = tab_icon::tab_icon(
-                                    &icon_settings,
-                                    &icons,
-                                    inputs.profile_icon.as_deref(),
-                                    process,
-                                );
-                                (id, title, icon)
-                            })
-                            .collect::<Vec<_>>();
-                        (titles, window_title)
+                let shared = Arc::new((blocks, window_blocks, icon_settings, icons));
+                // /proc reads and exec blocks may block, keep them off the main thread.
+                // every tab builds on its own, so a slow exec block holds back only its tab
+                let builds = inputs
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, (id, inputs))| {
+                        let shared = shared.clone();
+                        cx.background_executor().spawn(async move {
+                            let (blocks, window_blocks, icon_settings, icons) = &*shared;
+                            // read once, the window title, tab title and icon all need it
+                            let process = foreground_process(inputs.shell_pid);
+                            let window_title = (ix == active).then(|| {
+                                tab_title::build_title(window_blocks, &inputs, process.as_ref())
+                            });
+                            let title = tab_title::build_title(blocks, &inputs, process.as_ref());
+                            let icon = tab_icon::tab_icon(
+                                icon_settings,
+                                icons,
+                                inputs.profile_icon.as_deref(),
+                                process,
+                            );
+                            (id, title, icon, window_title)
+                        })
                     })
-                    .await;
+                    .collect::<Vec<_>>();
+                let built_at = Instant::now();
+                let mut window_title = String::new();
+                let titles = futures::future::join_all(builds)
+                    .await
+                    .into_iter()
+                    .map(|(id, title, icon, active_title)| {
+                        if let Some(active_title) = active_title {
+                            window_title = active_title;
+                        }
+                        (id, title, icon)
+                    })
+                    .collect();
                 let Ok(()) = this.update_in(cx, |this, window, cx| {
                     this.set_titles(titles, window_title, window, cx)
                 }) else {
@@ -365,10 +375,25 @@ impl Workspace {
                     .background_executor()
                     .timer(TITLE_REFRESH_INTERVAL)
                     .fuse();
-                cx.background_executor().timer(TITLE_REFRESH_MIN_GAP).await;
-                futures::select_biased! {
-                    _ = refresh_rx.next() => {},
-                    _ = timer => {},
+                let urgent = futures::select_biased! {
+                    urgent = refresh_rx.next() => urgent.unwrap_or(true),
+                    _ = timer => true,
+                };
+                // output asks many times a second, so its refreshes are spaced out,
+                // while new, moved or closed tabs get their titles right away
+                if !urgent {
+                    let mut gap = cx
+                        .background_executor()
+                        .timer(TITLE_REFRESH_MIN_GAP.saturating_sub(built_at.elapsed()))
+                        .fuse();
+                    loop {
+                        futures::select_biased! {
+                            _ = gap => break,
+                            urgent = refresh_rx.next() => if urgent != Some(false) {
+                                break;
+                            },
+                        }
+                    }
                 }
                 // many requests while building count as one
                 while refresh_rx.try_recv().is_ok() {}
@@ -490,7 +515,7 @@ impl Workspace {
         let subscription = cx.subscribe_in(&terminal, window, {
             let view = view.clone();
             move |this, _, event: &Event, window, cx| match event {
-                Event::TitleChanged => this.refresh_titles(),
+                Event::TitleChanged => this.refresh_titles_later(),
                 // shell exited, so close its tab
                 // TODO: do we need it at all? probably we need a setting, if to keep exited tab..
                 Event::CloseTerminal => {
@@ -501,7 +526,7 @@ impl Workspace {
                 // a new program often starts by printing something
                 Event::Wakeup => {
                     this.schedule_ready(&view, window, cx);
-                    this.refresh_titles();
+                    this.refresh_titles_later();
                 }
             }
         });
@@ -1200,7 +1225,13 @@ impl Workspace {
                 }
             }
         }
-        // scrolling and pasting change the grid without a wakeup, redraw the active tab
+        // scrolling and pasting change the grid without a wakeup, and terminal views are
+        // cached, so the active tab is redrawn through its own view
+        if let Some(pane) = self.pane(self.focused)
+            && let Some(tab) = pane.tabs.get(pane.active)
+        {
+            tab.view.update(cx, |_, cx| cx.notify());
+        }
         cx.notify();
     }
 
@@ -1301,7 +1332,11 @@ impl Workspace {
     }
 
     fn refresh_titles(&self) {
-        self.refresh_titles.unbounded_send(()).ok();
+        self.refresh_titles.unbounded_send(true).ok();
+    }
+
+    fn refresh_titles_later(&self) {
+        self.refresh_titles.unbounded_send(false).ok();
     }
 
     fn title_inputs(&self, cx: &App) -> TitleSnapshot {

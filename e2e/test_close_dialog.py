@@ -142,8 +142,8 @@ def test_keys_do_not_reach_the_program(app_factory):
     app.snap("typed abc while asked")
     app.key("Escape")
     app.wait(lambda: dialog(app) is None, msg="dialog closed")
-    # the first ctrl-d sends a pending line to cat, the second one ends it
-    app.key("ctrl+d", "ctrl+d")
+    # nothing typed reached cat, so one ctrl-d ends it. a second one would exit bash too
+    app.key("ctrl+d")
     app.wait_title("2 bash")
     assert app.file("typed").read_text() == ""
 

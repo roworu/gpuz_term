@@ -550,10 +550,8 @@ impl Render for ConfirmClose {
                 div()
                     .text_color(theme.text_muted)
                     .child(match &self.target {
-                        CloseTarget::Tabs(_) => {
-                            "close anyway? arrows pick a button, escape cancels"
-                        }
-                        CloseTarget::Window => "quit anyway? arrows pick a button, escape cancels",
+                        CloseTarget::Tabs(_) => "close anyway?",
+                        CloseTarget::Window => "quit anyway?",
                     }),
             )
             .child(

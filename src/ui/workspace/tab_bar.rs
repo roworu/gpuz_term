@@ -1,11 +1,11 @@
 //! drawing the workspace: tab bar on top, active terminal below
 // TODO: need a setting on where to put tabs (top, bottom, left?, right?)
 
-use std::sync::LazyLock;
+use std::{cell::RefCell, collections::HashMap, sync::LazyLock};
 
 use gpui::{
     AnyElement, App, Context, CursorStyle, Div, DragMoveEvent, MouseButton, ScrollHandle, Stateful,
-    Window, anchored, deferred, div, prelude::*, px, relative, rems,
+    StyleRefinement, Window, anchored, deferred, div, prelude::*, px, relative, rems,
 };
 use skrifa::{
     FontRef, MetadataProvider,
@@ -26,6 +26,21 @@ const DIVIDER_WIDTH: f32 = 4.;
 
 /// how far `icon` must move down, in ems, for its lowest point to stand on the baseline
 fn icon_drop(icon: &str) -> f32 {
+    // every tab asks on every frame with output, and there are only a few distinct icons
+    thread_local! {
+        static DROPS: RefCell<HashMap<String, f32>> = RefCell::default();
+    }
+    DROPS.with_borrow_mut(|drops| {
+        if let Some(drop) = drops.get(icon) {
+            return *drop;
+        }
+        let drop = measure_icon_drop(icon);
+        drops.insert(icon.to_owned(), drop);
+        drop
+    })
+}
+
+fn measure_icon_drop(icon: &str) -> f32 {
     // nerd font icons are centered on the line, not set on the baseline like letters.
     // gpui can't measure glyph outlines on linux, so they are read from the bundled font
     static FONT: LazyLock<Option<FontRef<'static>>> =
@@ -343,11 +358,15 @@ impl Workspace {
             .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
                 this.drop_tab_on_pane(pane_id, dragged.pane, dragged.ix, window, cx);
             }))
-            .children(
-                pane.tabs
-                    .get(pane.active)
-                    .map(|tab| div().size_full().child(tab.view.clone())),
-            )
+            // cached, so output or a redraw in one pane does not lay out the grids of the others
+            .children(pane.tabs.get(pane.active).map(|tab| {
+                // gpui only redraws a cached view on notify while the window tracks it, and a
+                // reused cache forgets views the workspace read earlier in the frame
+                tab.view.read(cx);
+                tab.view
+                    .clone()
+                    .cached(StyleRefinement::default().size_full())
+            }))
             .when_some(zone, |terminal, side| {
                 terminal.child(drop_overlay(side, theme))
             });

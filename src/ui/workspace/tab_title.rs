@@ -4,6 +4,7 @@ use std::{
     io::Read,
     path::Path,
     process::{Command, Stdio},
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
@@ -43,7 +44,9 @@ pub(super) fn build_title(
 }
 
 fn prompt() -> String {
-    let user = user_name();
+    // titles rebuild for every tab several times a second, and the user never changes
+    static USER: OnceLock<String> = OnceLock::new();
+    let user = USER.get_or_init(user_name);
     let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
         .or_else(|_| std::fs::read_to_string("/etc/hostname"))
         .unwrap_or_default();
