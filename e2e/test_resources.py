@@ -6,7 +6,7 @@ the measured numbers are written to the report.
 
 import time
 
-from harness import App, bundled_theme, close_to, dominant
+from harness import BACKEND, App, bundled_theme, close_to, dominant
 
 FEATURE = "performance and resources"
 
@@ -134,6 +134,11 @@ def test_resize_storm(app_factory, report_note):
     for i in range(40):
         app.resize(500 + (i * 37) % 800, 300 + (i * 53) % 500)
     app.resize(900, 600)
+    if BACKEND == "wayland":
+        # sway adopts a late commit for an older size as the floating window's own resize and
+        # drops the queued ones, the app acks every configure right. ask for the size once more
+        time.sleep(1)
+        app.resize(900, 600)
     app.wait(lambda: app.size() == (900, 600), msg="final size")
     report_note("40 resizes", f"{time.monotonic() - start:.2f} s")
     app.wait(lambda: app.pty_size() == app.expected_pty(900, 600), msg="pty size after the storm")

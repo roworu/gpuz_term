@@ -4,18 +4,25 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::selection::SelectionType;
 use gpui::{
-    App, ClipboardItem, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, Styled, Subscription, Task, Window, actions, div, px,
+    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, KeyDownEvent, Modifiers, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Styled, Subscription,
+    Task, Window, actions, div, px,
 };
 
 use crate::{
     settings::{Settings, SmoothScrollSettings},
-    terminal::{Event, Terminal},
+    terminal::{Event, MouseAction, MouseButton, Terminal},
     ui::terminal_element::TerminalElement,
 };
 
 actions!(terminal, [Copy, Paste]);
+
+/// clipboard change made from the view, so the workspace can notify about it
+pub enum ClipboardEvent {
+    Copied(String),
+    Pasted,
+}
 
 // default terminal scroll_multiplier
 const SCROLL_MULTIPLIER: f32 = 2.;
@@ -45,9 +52,11 @@ pub struct TerminalView {
     selecting: bool,
     /// left button went down on the scrollbar and is still held
     dragging_scrollbar: bool,
+    /// cell of the last mouse report, motion is only reported when it changes
+    last_mouse_cell: Option<(usize, usize)>,
     /// drives scrollbar auto hide
     last_scroll: Option<Instant>,
-    /// history seen on the last wakeup, growth means output scrolled the view
+    /// history seen on the last render, growth means output scrolled the view
     history_size: usize,
     /// running smooth scroll, advanced on every frame
     scroll_animation: Option<ScrollAnimation>,
@@ -61,14 +70,8 @@ impl TerminalView {
     pub fn new(terminal: Entity<Terminal>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
-            cx.subscribe(&terminal, |this, _, event: &Event, cx| {
+            cx.subscribe(&terminal, |_, _, event: &Event, cx| {
                 if *event == Event::Wakeup {
-                    // output pushing lines into history scrolls the view too
-                    let history_size = this.terminal.read(cx).history_size();
-                    if history_size > this.history_size {
-                        this.show_scrollbar(cx);
-                    }
-                    this.history_size = history_size;
                     cx.notify();
                 }
             }),
@@ -87,6 +90,7 @@ impl TerminalView {
             scroll_px: px(0.),
             selecting: false,
             dragging_scrollbar: false,
+            last_mouse_cell: None,
             last_scroll: None,
             history_size: 0,
             scroll_animation: None,
@@ -142,6 +146,28 @@ impl TerminalView {
             }
         };
         if lines != 0 {
+            let terminal = self.terminal.read(cx);
+            if terminal.owns_mouse(&event.modifiers) {
+                let cell = terminal.mouse_cell(event.position);
+                let button = if lines > 0 {
+                    MouseButton::WheelUp
+                } else {
+                    MouseButton::WheelDown
+                };
+                self.terminal.update(cx, |term, _| {
+                    for _ in 0..lines.unsigned_abs() {
+                        term.report_mouse(cell, button, MouseAction::Press, &event.modifiers);
+                    }
+                });
+                return;
+            }
+            if !event.modifiers.shift
+                && self
+                    .terminal
+                    .update(cx, |term, _| term.alternate_scroll(lines))
+            {
+                return;
+            }
             if Settings::get(cx).terminal.smooth_scroll.active() {
                 let terminal = self.terminal.read(cx);
                 // keep adding to the target, so fast wheel spins are not lost mid glide
@@ -214,8 +240,48 @@ impl TerminalView {
         }
     }
 
-    /// single click starts a selection, double selects words, triple lines, shift extends
+    /// tell the program about the mouse when it asked for it, true when it did
+    fn report_mouse(
+        &mut self,
+        position: Point<Pixels>,
+        button: MouseButton,
+        action: MouseAction,
+        modifiers: &Modifiers,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let terminal = self.terminal.read(cx);
+        if !terminal.owns_mouse(modifiers) {
+            return false;
+        }
+        let cell = terminal.mouse_cell(position);
+        // programs only care about the cell, not every pixel of motion inside it
+        if action == MouseAction::Motion && self.last_mouse_cell == Some(cell) {
+            return true;
+        }
+        self.last_mouse_cell = Some(cell);
+        self.terminal.update(cx, |term, _| {
+            term.report_mouse(cell, button, action, modifiers)
+        });
+        true
+    }
+
+    /// a press goes to the program when it asked for the mouse, otherwise a left click starts a
+    /// selection: single click, double selects words, triple lines, shift extends
     pub fn mouse_down(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        if let Some(button) = MouseButton::from_gpui(event.button)
+            && self.report_mouse(
+                event.position,
+                button,
+                MouseAction::Press,
+                &event.modifiers,
+                cx,
+            )
+        {
+            return;
+        }
+        if event.button != gpui::MouseButton::Left {
+            return;
+        }
         let ty = match event.click_count {
             0 | 1 => SelectionType::Simple,
             2 => SelectionType::Semantic,
@@ -232,24 +298,54 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// extend the selection while the button is held, even outside the terminal area
-    pub fn mouse_drag(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+    /// extend the selection while the button is held, even outside the terminal area,
+    /// or report the motion to a program that asked for it
+    pub fn mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         if self.selecting {
             self.terminal
                 .update(cx, |term, _| term.extend_selection(event.position));
             cx.notify();
+            return;
         }
+        if self.dragging_scrollbar {
+            return;
+        }
+        let button = match event.pressed_button {
+            Some(button) => match MouseButton::from_gpui(button) {
+                Some(button) => button,
+                None => return,
+            },
+            None => MouseButton::None,
+        };
+        self.report_mouse(
+            event.position,
+            button,
+            MouseAction::Motion,
+            &event.modifiers,
+            cx,
+        );
     }
 
     /// finish the drag, the selection stays until the next click or input
-    pub fn mouse_up(&mut self) {
+    pub fn mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
+        let was_local = self.selecting || self.dragging_scrollbar;
         self.selecting = false;
         self.dragging_scrollbar = false;
+        if !was_local && let Some(button) = MouseButton::from_gpui(event.button) {
+            self.report_mouse(
+                event.position,
+                button,
+                MouseAction::Release,
+                &event.modifiers,
+                cx,
+            );
+        }
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = self.terminal.read(cx).selection_text() {
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            cx.emit(ClipboardEvent::Copied(text));
         }
     }
 
@@ -257,9 +353,12 @@ impl TerminalView {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             self.scroll_animation = None;
             self.terminal.update(cx, |term, _| term.paste(&text));
+            cx.emit(ClipboardEvent::Pasted);
         }
     }
 }
+
+impl EventEmitter<ClipboardEvent> for TerminalView {}
 
 impl Focusable for TerminalView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -281,6 +380,17 @@ impl Render for TerminalView {
                 window.request_animation_frame();
             }
         }
+        // synced here rather than on every wakeup, so busy output does not take the term lock
+        // from the io thread more than once a frame. prepaint syncs again only after a resize
+        let history_size = self.terminal.update(cx, |term, _| {
+            term.sync();
+            term.last_content.history_size
+        });
+        // output pushing lines into history scrolls the view too
+        if history_size > self.history_size {
+            self.show_scrollbar(cx);
+        }
+        self.history_size = history_size;
         div()
             .id("terminal-view")
             .size_full()

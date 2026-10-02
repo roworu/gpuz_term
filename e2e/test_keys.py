@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from harness import App, bundled_theme, close_to, get_clipboard, near, set_clipboard, xdo
+from harness import App, bundled_theme, close_to, get_clipboard, near, set_clipboard
 
 FEATURE = "keyboard, keybindings and clipboard"
 
@@ -113,12 +113,15 @@ def test_paste_is_bracketed_only_when_asked(app_factory, bracketed):
     """pasted text is wrapped in bracketed paste marks only when the program turned it on"""
     mode = "\\033[?2004h" if bracketed else "\\033[?2004l"
     app = app_factory({"theme": {"mode": "dark"}},
-                      script=f"printf '{mode}'; stty raw -echo; head -c 20 > \"$T2_TMP/got\"")
+                      script=f"printf '{mode}'; stty raw -echo; head -c 20 > \"$T2_TMP/got.tmp\"; stty sane; "
+                             'mv "$T2_TMP/got.tmp" "$T2_TMP/got"; echo; echo got:; cat -v "$T2_TMP/got"')
     set_clipboard("hi")
     time.sleep(0.5)
     app.key("ctrl+shift+v")
     app.type("x" * 20)
     got = app.wait_file("got")
+    time.sleep(0.3)
+    app.snap("what the program read, escapes shown by cat -v")
     assert ("\x1b[200~hi\x1b[201~" in got) == bracketed, repr(got)
     assert "hi" in got
 
@@ -145,11 +148,46 @@ def test_double_click_selects_word(app_factory):
     app.run("clear; echo alpha bravo charlie")
     time.sleep(1)
     x0, y0, x1, y1 = app.cell_rect(8, 0)
-    app.focus()
-    app.mouse((x0 + x1) // 2, (y0 + y1) // 2)
-    xdo("click", "--repeat", "2", "--delay", "80", "1")
+    app.click((x0 + x1) // 2, (y0 + y1) // 2, repeat=2)
     app.key("ctrl+shift+c")
     app.wait(lambda: get_clipboard() == "bravo", msg=f"clipboard, got {get_clipboard()!r}")
+
+
+def selected(app: App, col: int, row: int, cols: int) -> bool:
+    """the selection color fills the cells around their glyphs"""
+    x0, y0, x1, y1 = app.cell_rect(col, row, cols)
+    return near(app.shot()[y0:y1, x0:x1], DARK["selection"], 3).mean() > 0.3
+
+
+def test_triple_click_selects_line(app_factory):
+    """a triple click selects the whole line under the pointer"""
+    app = keyed(app_factory)
+    app.run("clear; echo alpha bravo charlie")
+    time.sleep(1)
+    x0, y0, x1, y1 = app.cell_rect(8, 0)
+    app.click((x0 + x1) // 2, (y0 + y1) // 2, repeat=3)
+    app.wait(lambda: selected(app, 14, 0, 3), msg="line selected")
+    app.snap("line selected with a triple click")
+    app.key("ctrl+shift+c")
+    # line selections end with the newline, like in alacritty
+    app.wait(lambda: get_clipboard() == "alpha bravo charlie\n", msg=f"clipboard, got {get_clipboard()!r}")
+
+
+def test_shift_click_extends_selection(app_factory):
+    """a click then a shift+click selects everything between them"""
+    app = keyed(app_factory)
+    app.run("clear; echo alpha bravo charlie")
+    time.sleep(1)
+    x0, y0, _, y1 = app.cell_rect(0, 0)
+    _, _, x1, _ = app.cell_rect(18, 0)
+    y = (y0 + y1) // 2
+    app.click(x0 + 1, y)
+    with app.hold("shift"):
+        app.click(x1 - 1, y)
+    app.wait(lambda: selected(app, 8, 0, 3), msg="selection extended")
+    app.snap("click on alpha then shift+click on charlie")
+    app.key("ctrl+shift+c")
+    app.wait(lambda: get_clipboard() == "alpha bravo charlie", msg=f"clipboard, got {get_clipboard()!r}")
 
 
 @pytest.mark.parametrize("action,keys", [("new_tab", "ctrl+shift+t"), ("next_tab", "ctrl+Tab"),

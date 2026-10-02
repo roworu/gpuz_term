@@ -18,10 +18,14 @@ const DONE_POLL: Duration = Duration::from_millis(250);
 // "a; b" does not end the watch early
 const DONE_IDLE_POLLS: u32 = 4;
 const DONE_IDLE_POLLS_AFTER_START: u32 = 2;
+// copied text longer than this many chars is cut, so it and its label fit one notification line
+const COPIED_PREVIEW_CHARS: usize = 28;
 
 pub(super) struct Notification {
     id: usize,
     pub(super) text: String,
+    /// shown after `text` in its own style, like the copied text
+    pub(super) detail: Option<String>,
     /// tab switched to when the notification is clicked
     tab: Option<Entity<TerminalView>>,
     _dismiss: Task<()>,
@@ -32,6 +36,16 @@ impl Workspace {
     pub(super) fn show_notification(
         &mut self,
         text: impl Into<String>,
+        tab: Option<Entity<TerminalView>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.push_notification(text.into(), None, tab, cx);
+    }
+
+    fn push_notification(
+        &mut self,
+        text: String,
+        detail: Option<String>,
         tab: Option<Entity<TerminalView>>,
         cx: &mut Context<Self>,
     ) {
@@ -55,7 +69,8 @@ impl Workspace {
         };
         self.notifications.push(Notification {
             id,
-            text: text.into(),
+            text,
+            detail,
             tab,
             _dismiss,
         });
@@ -63,6 +78,21 @@ impl Workspace {
             self.notifications.remove(0);
         }
         cx.notify();
+    }
+
+    /// tell what was copied, when `notifications.copy` is on
+    pub(super) fn notify_copied(&mut self, text: &str, cx: &mut Context<Self>) {
+        if Settings::get(cx).notifications.copy {
+            let detail = Some(copied_preview(text));
+            self.push_notification("copied".into(), detail, None, cx);
+        }
+    }
+
+    /// tell that clipboard was pasted, when `notifications.paste` is on
+    pub(super) fn notify_pasted(&mut self, cx: &mut Context<Self>) {
+        if Settings::get(cx).notifications.paste {
+            self.show_notification("pasted from clipboard", None, cx);
+        }
     }
 
     fn dismiss_notification(&mut self, id: usize, cx: &mut Context<Self>) {
@@ -77,9 +107,9 @@ impl Workspace {
             .iter()
             .find(|notification| notification.id == id)
             .and_then(|notification| notification.tab.as_ref())
-            .and_then(|view| self.tabs.iter().position(|tab| &tab.view == view));
-        if let Some(ix) = tab {
-            self.activate_tab(ix, window, cx);
+            .and_then(|view| self.find_view(view));
+        if let Some((pane, ix)) = tab {
+            self.activate_tab(pane, ix, window, cx);
         }
         self.dismiss_notification(id, cx);
     }
@@ -98,9 +128,10 @@ impl Workspace {
             loop {
                 cx.background_executor().timer(DONE_POLL).await;
                 let Ok(tab) = this.update(cx, |this, _| {
-                    this.tabs
-                        .iter()
-                        .find(|tab| tab.view == view)
+                    let (pane, ix) = this.find_view(&view)?;
+                    this.pane(pane)?
+                        .tabs
+                        .get(ix)
                         .map(|tab| tab.ready && tab.pending_input.is_empty())
                 }) else {
                     return;
@@ -163,7 +194,19 @@ impl Workspace {
                 .text_color(theme.text)
                 .cursor_pointer()
                 .hover(|item| item.bg(theme.tab_active_background))
+                .flex()
+                .items_center()
+                .gap_2()
                 .child(notification.text.clone())
+                // terminal colors set the copied text apart from the label
+                .children(notification.detail.clone().map(|detail| {
+                    div()
+                        .px_1()
+                        .rounded_sm()
+                        .bg(theme.terminal_background)
+                        .text_color(theme.terminal_foreground)
+                        .child(detail)
+                }))
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.click_notification(id, window, cx)),
                 )
@@ -185,5 +228,47 @@ impl Workspace {
             )
             .into_any_element(),
         )
+    }
+}
+
+// whitespace runs, newlines too, become one space so a notification stays a single line
+fn copied_preview(text: &str) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= COPIED_PREVIEW_CHARS {
+        return flat;
+    }
+    let cut: String = flat.chars().take(COPIED_PREVIEW_CHARS - 1).collect();
+    format!("{}…", cut.trim_end())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{COPIED_PREVIEW_CHARS, copied_preview};
+
+    #[test]
+    fn short_text_is_shown_whole() {
+        assert_eq!(copied_preview("hello world"), "hello world");
+    }
+
+    #[test]
+    fn newlines_and_runs_of_spaces_become_one_space() {
+        assert_eq!(copied_preview("  a\n\tb   c\n"), "a b c");
+    }
+
+    #[test]
+    fn long_text_is_cut_with_ellipsis() {
+        let preview = copied_preview(&"x".repeat(COPIED_PREVIEW_CHARS + 10));
+        assert_eq!(preview.chars().count(), COPIED_PREVIEW_CHARS);
+        assert!(preview.ends_with('…'));
+        assert_eq!(
+            copied_preview(&"y".repeat(COPIED_PREVIEW_CHARS)),
+            "y".repeat(COPIED_PREVIEW_CHARS)
+        );
+    }
+
+    #[test]
+    fn cut_respects_multibyte_chars() {
+        let preview = copied_preview(&"日".repeat(COPIED_PREVIEW_CHARS * 2));
+        assert_eq!(preview.chars().count(), COPIED_PREVIEW_CHARS);
     }
 }

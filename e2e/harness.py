@@ -5,6 +5,8 @@ every App gets its own temp XDG_CONFIG_HOME and HOME, so cases never share confi
 """
 
 import contextlib
+import ctypes
+import io
 import json
 import math
 import os
@@ -17,7 +19,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-from PIL import ImageGrab
+from PIL import Image, ImageGrab
 
 SRC = Path(os.environ.get("KUTERM_SRC", "/src"))
 BIN = Path(os.environ.get("KUTERM_BIN", SRC / "target/podman/debug/kuterm"))
@@ -153,23 +155,32 @@ def ink_bbox(img: np.ndarray, background: tuple, threshold: int = 40) -> tuple |
     return mask_bbox(ink(img, background, threshold))
 
 
+# which display server the apps run on: "x11" (xvfb and openbox) or "wayland" (headless sway)
+BACKEND = os.environ.get("E2E_BACKEND", "x11")
+
+
 class Session:
     display = os.environ.get("DISPLAY", ":99")
+    wayland_display = "wayland-1"
+    sway_socket = ""
     runtime_dir = "/tmp/e2e-runtime"
     bus_address = ""
 
 
-def x_env() -> dict:
+def session_env() -> dict:
+    """environment for programs talking to the test display, apps get their own on top"""
     env = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        "DISPLAY": Session.display,
-        "WAYLAND_DISPLAY": "",
         "XDG_RUNTIME_DIR": Session.runtime_dir,
-        "GPUI_X11_SCALE_FACTOR": "1",
         "LANG": "C.UTF-8",
         "USER": "root",
         "TERM": "dumb",
     }
+    if BACKEND == "wayland":
+        # no DISPLAY, so gpui picks wayland
+        env.update({"WAYLAND_DISPLAY": Session.wayland_display, "SWAYSOCK": Session.sway_socket})
+    else:
+        env.update({"DISPLAY": Session.display, "WAYLAND_DISPLAY": "", "GPUI_X11_SCALE_FACTOR": "1"})
     if Session.bus_address:
         env["DBUS_SESSION_BUS_ADDRESS"] = Session.bus_address
     if "VK_ICD_FILENAMES" in os.environ:
@@ -178,24 +189,107 @@ def x_env() -> dict:
 
 
 def xdo(*args: str, check: bool = True) -> str:
-    return sh("xdotool", *args, check=check, env=x_env())
+    return sh("xdotool", *args, check=check, env=session_env())
+
+
+# X11 keysyms of F1..F12, xdotool pads function keys with Alt on this keymap
+FUNCTION_KEYSYMS = {f"F{n}": 0xFFBE + n - 1 for n in range(1, 13)}
+
+
+def x11_keypress(keysym: int) -> None:
+    """press and release a key by keysym through XTest, without xdotool's extra modifiers"""
+    x11 = ctypes.CDLL("libX11.so.6")
+    xtst = ctypes.CDLL("libXtst.so.6")
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XKeysymToKeycode.restype = ctypes.c_ubyte
+    x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    x11.XFlush.argtypes = [ctypes.c_void_p]
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    xtst.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+    display = x11.XOpenDisplay(Session.display.encode())
+    assert display, f"cannot open display {Session.display}"
+    keycode = x11.XKeysymToKeycode(display, keysym)
+    xtst.XTestFakeKeyEvent(display, keycode, 1, 0)
+    x11.XFlush(display)
+    time.sleep(0.05)
+    xtst.XTestFakeKeyEvent(display, keycode, 0, 0)
+    x11.XFlush(display)
+    x11.XCloseDisplay(display)
+
+
+def swaymsg(*args: str, check: bool = True):
+    """run a sway command, json replies are parsed"""
+    out = sh("swaymsg", *args, check=check, env=session_env())
+    return json.loads(out) if out.strip().startswith(("[", "{")) else out
 
 
 def screen(x: int, y: int, w: int, h: int) -> np.ndarray:
-    """grab a screen area as an rgb array"""
+    """grab a screen area as an rgb array, in physical pixels"""
+    if BACKEND == "wayland":
+        # grim takes the area in logical pixels and returns the output's physical ones
+        scale = Input.scale()
+        png = subprocess.run(["grim", "-g", f"{x},{y} {round(w / scale)}x{round(h / scale)}", "-"],
+                             capture_output=True, env=session_env(), timeout=10, check=True).stdout
+        return np.asarray(Image.open(io.BytesIO(png)).convert("RGB"))
     img = ImageGrab.grab(bbox=(x, y, x + w, y + h), xdisplay=Session.display)
     return np.asarray(img.convert("RGB"))
 
 
 def set_clipboard(text: str) -> None:
-    """own the clipboard with xclip, it keeps serving until someone else takes it"""
-    proc = subprocess.Popen(["xclip", "-selection", "clipboard", "-i"], stdin=subprocess.PIPE,
-                            env=x_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    """own the clipboard, the owner keeps serving it until someone else takes it"""
+    args = ["wl-copy"] if BACKEND == "wayland" else ["xclip", "-selection", "clipboard", "-i"]
+    proc = subprocess.Popen(args, stdin=subprocess.PIPE, env=session_env(),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     proc.communicate(text.encode(), timeout=5)
 
 
 def get_clipboard() -> str:
-    return sh("xclip", "-selection", "clipboard", "-o", check=False, env=x_env())
+    if BACKEND == "wayland":
+        return sh("wl-paste", "-n", check=False, env=session_env())
+    return sh("xclip", "-selection", "clipboard", "-o", check=False, env=session_env())
+
+
+# xdotool button numbers to linux input codes, 4 and 5 are the wheel
+WAYLAND_BUTTONS = {1: 272, 2: 274, 3: 273}
+
+
+class Input:
+    """the wayland session's virtual keyboard and pointer, see fake_input.py"""
+
+    proc = None
+
+    @classmethod
+    def start(cls) -> None:
+        cls.proc = subprocess.Popen(["python3", str(Path(__file__).with_name("fake_input.py"))],
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                                    env={**session_env(), "PYTHONDONTWRITEBYTECODE": "1"})
+        line = cls.proc.stdout.readline().strip()
+        assert line == "ready", f"virtual input failed to start: {line!r}"
+
+    @classmethod
+    def send(cls, command: str) -> None:
+        cls.proc.stdin.write(command + "\n")
+        cls.proc.stdin.flush()
+        line = cls.proc.stdout.readline().strip()
+        assert line == "ok", f"virtual input: {command!r} gave {line!r}"
+
+    @classmethod
+    def output(cls) -> dict:
+        """the output apps open on, tests may add more"""
+        return next(o for o in swaymsg("-t", "get_outputs") if o["name"] == "HEADLESS-1")
+
+    @classmethod
+    def scale(cls) -> float:
+        return float(cls.output()["scale"])
+
+    @classmethod
+    def move(cls, x: float, y: float) -> None:
+        # absolute positions span the box around every output
+        rects = [o["rect"] for o in swaymsg("-t", "get_outputs") if o["active"]]
+        w = max(r["x"] + r["width"] for r in rects)
+        h = max(r["y"] + r["height"] for r in rects)
+        cls.send(f"move {x} {y} {w} {h}")
 
 
 class Portal:
@@ -207,7 +301,7 @@ class Portal:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
-            env={**x_env(), "PYTHONDONTWRITEBYTECODE": "1"},
+            env={**session_env(), "PYTHONDONTWRITEBYTECODE": "1"},
         )
         line = self.proc.stdout.readline().strip()
         assert line == "ready", f"fake portal failed to start: {line!r}"
@@ -263,6 +357,8 @@ class App:
         self.settings = dict(settings) if isinstance(settings, dict) else settings
         self.args = [str(a) for a in (args or [])]
         self.env_extra = env or {}
+        # physical pixels per logical one, the layout helpers below return physical pixels
+        self.scale = float(self.env_extra.get("GPUI_X11_SCALE_FACTOR") or 1)
         self.proc = None
         self.wid = None
         self.log_path = self.tmp / "app.log"
@@ -296,7 +392,7 @@ class App:
         return path
 
     def app_env(self) -> dict:
-        env = x_env()
+        env = session_env()
         env.update({"HOME": str(self.home), "XDG_CONFIG_HOME": str(self.config_home), "PS1": "$ ",
                     "T2_TMP": str(self.tmp)})
         for key, value in self.env_extra.items():
@@ -312,8 +408,11 @@ class App:
             [str(BIN), *self.args], cwd=self.home, env=self.app_env(), stdout=self.log, stderr=subprocess.STDOUT
         )
         self.wid = wait_until(self._find_window, timeout=30, msg="the app window")
-        # give it focus like a user clicking it, openbox usually does this on map already
-        xdo("windowactivate", "--sync", self.wid, check=False)
+        if BACKEND == "wayland":
+            # the output scale is set by the compositor, not by the app env
+            self.scale = Input.scale()
+        # give it focus like a user clicking it, the window manager usually does this on map already
+        self.focus()
         # first frame: the window is no longer blank black
         wait_until(self._painted, timeout=30, msg="the first painted frame")
 
@@ -326,8 +425,24 @@ class App:
     def _find_window(self):
         if self.proc.poll() is not None:
             raise AssertionError(f"app exited early with {self.proc.returncode}:\n{self.output()}")
+        if BACKEND == "wayland":
+            node = self._node()
+            return str(node["id"]) if node and node.get("visible") else None
         out = xdo("search", "--onlyvisible", "--pid", str(self.proc.pid), check=False).split()
         return out[0] if out else None
+
+    def _node(self) -> dict | None:
+        """sway tree node of the app window"""
+        stack = [swaymsg("-t", "get_tree")]
+        while stack:
+            node = stack.pop()
+            if node.get("pid") == self.proc.pid:
+                return node
+            stack.extend(node.get("nodes", []) + node.get("floating_nodes", []))
+        return None
+
+    def _sway(self, command: str) -> None:
+        swaymsg(f"[con_id={self.wid}] {command}", check=False)
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -395,13 +510,24 @@ class App:
         return found
 
     def geometry(self) -> tuple:
-        """(x, y, w, h) of the client area on screen"""
-        info = sh("xwininfo", "-id", self.wid, env=x_env())
+        """(x, y, w, h) of the client area on screen, the size in physical pixels"""
+        if BACKEND == "wayland":
+            # the position stays logical, it is only passed back to screen()
+            rect = self._node()["rect"]
+            return rect["x"], rect["y"], round(rect["width"] * self.scale), round(rect["height"] * self.scale)
+        info = sh("xwininfo", "-id", self.wid, env=session_env())
         val = dict(line.strip().split(":", 1) for line in info.splitlines() if ":" in line)
         return tuple(int(val[k]) for k in ("Absolute upper-left X", "Absolute upper-left Y", "Width", "Height"))
 
     def size(self) -> tuple:
         return self.geometry()[2:]
+
+    def fullscreen(self) -> bool:
+        """whether the window manager reports the window as fullscreen"""
+        if BACKEND == "wayland":
+            return bool(self._node().get("fullscreen_mode"))
+        state = sh("xprop", "-id", self.wid, "_NET_WM_STATE", env=session_env())
+        return "_NET_WM_STATE_FULLSCREEN" in state
 
     def shot(self) -> np.ndarray:
         """screenshot of the client area"""
@@ -420,6 +546,8 @@ class App:
             raise AssertionError(f"{error}\napp output:\n{self.output()[-1500:]}") from None
 
     def title(self) -> str:
+        if BACKEND == "wayland":
+            return self._node()["name"] or ""
         return xdo("getwindowname", self.wid).rstrip("\n")
 
     def wait_title(self, expected, timeout: float = 10) -> str:
@@ -433,19 +561,53 @@ class App:
         return self.wait(check, timeout=timeout, msg=f"window title {expected!r} (now {self.title()!r})")
 
     def focus(self) -> None:
+        if BACKEND == "wayland":
+            self._sway("focus")
+            wait_until(lambda: self._node()["focused"], timeout=5, msg="focus")
+            return
         xdo("windowactivate", "--sync", self.wid, check=False)
         wait_until(lambda: xdo("getactivewindow", check=False).strip() == self.wid, timeout=5, msg="focus")
 
+    def wm_close(self) -> None:
+        """close the window like its title bar button: openbox sends WM_DELETE_WINDOW, sway
+        xdg_toplevel.close"""
+        if BACKEND == "wayland":
+            self._sway("kill")
+        else:
+            sh("wmctrl", "-i", "-c", self.wid, env=session_env())
+
+    def exit_code(self, timeout: float = 10) -> int:
+        """wait for the app to exit on its own and return its exit code"""
+        return self.proc.wait(timeout)
+
     def resize(self, w: int, h: int) -> None:
+        if BACKEND == "wayland":
+            self._sway(f"resize set {w} {h}")
+            return
         xdo("windowsize", "--sync", self.wid, str(w), str(h), check=False)
 
     def key(self, *keys: str) -> None:
-        """press keys with xdotool, e.g. key('ctrl+shift+t')"""
+        """press keys named like xdotool does, e.g. key('ctrl+shift+t', 'Return')"""
         self.focus()
-        xdo("key", "--clearmodifiers", "--delay", "40", *keys)
+        if BACKEND == "wayland":
+            for combo in keys:
+                *mods, name = combo.split("+")
+                Input.send(f"key {','.join(m.lower() for m in mods) or '-'} {name}")
+                time.sleep(0.04)
+            return
+        for combo in keys:
+            # xdotool presses Alt around function keys on this keymap, send them by keycode
+            keysym = FUNCTION_KEYSYMS.get(combo)
+            if keysym is None:
+                xdo("key", "--clearmodifiers", "--delay", "40", combo)
+            else:
+                x11_keypress(keysym)
 
     def type(self, text: str) -> None:
         self.focus()
+        if BACKEND == "wayland":
+            Input.send(f"type {text.encode().hex()}")
+            return
         xdo("type", "--delay", "8", "--", text)
 
     def run(self, command: str) -> None:
@@ -454,27 +616,63 @@ class App:
         self.key("Return")
 
     def mouse(self, x: int, y: int) -> None:
-        """move the pointer to window coordinates"""
+        """move the pointer to window coordinates in physical pixels"""
+        if BACKEND == "wayland":
+            rect = self._node()["rect"]
+            Input.move(rect["x"] + x / self.scale, rect["y"] + y / self.scale)
+            return
         xdo("mousemove", "--window", self.wid, str(x), str(y))
 
-    def click(self, x: int, y: int, button: int = 1) -> None:
+    def button(self, button: int, down: bool) -> None:
+        """press or release a mouse button where the pointer is"""
+        if BACKEND == "wayland":
+            Input.send(f"button {WAYLAND_BUTTONS[button]} {int(down)}")
+        else:
+            xdo("mousedown" if down else "mouseup", str(button))
+
+    def click(self, x: int, y: int, button: int = 1, repeat: int = 1) -> None:
+        """click, several times for a double or triple click"""
         self.focus()
         self.mouse(x, y)
         time.sleep(0.05)
-        xdo("click", str(button))
+        for i in range(repeat):
+            if i:
+                time.sleep(0.08)
+            self.button(button, True)
+            self.button(button, False)
+
+    @contextlib.contextmanager
+    def hold(self, modifier: str):
+        """keep a modifier key down, like shift for a shift+click"""
+        self.focus()
+        if BACKEND == "wayland":
+            Input.send(f"hold {modifier}")
+            try:
+                yield
+            finally:
+                Input.send("hold -")
+            return
+        xdo("keydown", modifier)
+        try:
+            yield
+        finally:
+            xdo("keyup", modifier)
 
     def drag(self, start: tuple, end: tuple) -> None:
         self.focus()
         self.mouse(*start)
-        xdo("mousedown", "1")
+        self.button(1, True)
         for i in range(1, 6):
             self.mouse(start[0] + (end[0] - start[0]) * i // 5, start[1] + (end[1] - start[1]) * i // 5)
             time.sleep(0.03)
-        xdo("mouseup", "1")
+        self.button(1, False)
 
     def wheel(self, x: int, y: int, up: bool, clicks: int = 5) -> None:
         self.focus()
         self.mouse(x, y)
+        if BACKEND == "wayland":
+            Input.send(f"wheel {-clicks if up else clicks}")
+            return
         xdo("click", "--repeat", str(clicks), "--delay", "20", "4" if up else "5")
 
     def palette(self, query: str, run: bool = True) -> None:
@@ -537,12 +735,15 @@ class App:
     def bar_height(self) -> int:
         """tab bar height with its bottom border, when shown"""
         # 2 rems, the border is drawn inside that height
-        return round(2 * self.ui_font_size())
+        return round(round(2 * self.ui_font_size()) * self.scale)
 
-    def cell_width(self) -> float:
+    def _cell_width(self) -> float:
         return self.font_size() * JB_ADVANCE
 
-    def line_height(self) -> int:
+    def cell_width(self) -> float:
+        return self._cell_width() * self.scale
+
+    def _line_height(self) -> int:
         lh = self._get("terminal", "line_height", default=bundled_settings()["terminal"]["line_height"])
         value = {"standard": 1.3, "comfortable": 1.618}.get(lh) if isinstance(lh, str) else float(lh["custom"])
         if value < 1:
@@ -551,18 +752,26 @@ class App:
         # rust rounds half away from zero
         return int(math.floor(self.font_size() * value + 0.5))
 
-    def scrollbar_width(self) -> float:
+    def line_height(self) -> float:
+        # rounded in logical pixels, then scaled
+        value = self._line_height() * self.scale
+        return int(value) if value == int(value) else value
+
+    def _scrollbar_width(self) -> float:
         bar = bundled_settings()["terminal"]["scrollbar"]
         if self._get("terminal", "scrollbar", "enable", default=bar["enable"]) == "off":
             return 0.0
         width = float(self._get("terminal", "scrollbar", "width", default=bar["width"]))
         return float(bar["width"]) if width < 2 else min(width, 64.0)
 
+    def scrollbar_width(self) -> float:
+        return self._scrollbar_width() * self.scale
+
     def expected_pty(self, w: int, h: int, top: int = 0) -> tuple:
-        """(rows, cols) for a window of w x h with `top` pixels taken by the tab bar"""
-        cw = self.cell_width()
-        cols = int(max(w - cw - self.scrollbar_width(), cw * 2) // cw)
-        rows = int(max(h - top, self.line_height()) // self.line_height())
+        """(rows, cols) for a window of w x h logical pixels with `top` of them taken by the tab bar"""
+        cw, lh = self._cell_width(), self._line_height()
+        cols = int(max(w - cw - self._scrollbar_width(), cw * 2) // cw)
+        rows = int(max(h - top, lh) // lh)
         return rows, cols
 
     def cell_rect(self, col: int, row: int, cols: int = 1, rows: int = 1, top: int = 0) -> tuple:
@@ -574,9 +783,9 @@ class App:
             ox = math.floor(cw + self.scrollbar_width())
         return (
             ox + math.floor(col * cw),
-            oy + row * lh,
+            oy + math.floor(row * lh),
             ox + math.ceil((col + cols) * cw),
-            oy + (row + rows) * lh,
+            oy + math.ceil((row + rows) * lh),
         )
 
     def cells_color(self, col: int, row: int, cols: int, img=None, top: int = 0) -> tuple:

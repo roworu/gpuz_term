@@ -30,6 +30,8 @@ def panel(app: App, img=None) -> tuple | None:
     """bbox of the palette panel, drawn in the tab bar color over the terminal"""
     img = app.shot() if img is None else img
     mask = near(img, C["tab_bar_background"], 2)
+    # the tab bar has the panel color too, the panel always starts below it
+    mask[: app.bar_height()] = False
     return mask_bbox(mask) if mask.sum() > 5000 else None
 
 

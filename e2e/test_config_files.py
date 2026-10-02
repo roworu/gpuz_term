@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from harness import ASSETS, BIN, BASH, App, bundled_theme, close_to, dominant, x_env
+from harness import ASSETS, BIN, BASH, App, bundled_theme, close_to, dominant, session_env
 
 FEATURE = "config files and command line"
 
@@ -85,7 +85,7 @@ def test_out_of_range_font_size_is_limited(app_factory, value, expected):
 
 def test_help_prints_usage(report_note):
     """--help prints the options and exits without a window"""
-    res = subprocess.run([str(BIN), "--help"], capture_output=True, text=True, timeout=10, env=x_env())
+    res = subprocess.run([str(BIN), "--help"], capture_output=True, text=True, timeout=10, env=session_env())
     report_note("kuterm --help", res.stdout)
     assert res.returncode == 0
     assert "usage: kuterm" in res.stdout and "--config-file" in res.stdout
@@ -93,7 +93,7 @@ def test_help_prints_usage(report_note):
 
 def test_unknown_option_fails(report_note):
     """an unknown option prints the error and usage and exits with 2"""
-    res = subprocess.run([str(BIN), "--nope"], capture_output=True, text=True, timeout=10, env=x_env())
+    res = subprocess.run([str(BIN), "--nope"], capture_output=True, text=True, timeout=10, env=session_env())
     report_note(f"kuterm --nope, exit code {res.returncode}", res.stderr)
     assert res.returncode == 2
     assert "--nope" in res.stderr and "usage: kuterm" in res.stderr

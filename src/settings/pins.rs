@@ -96,6 +96,18 @@ mod tests {
     }
 
     #[test]
+    fn save_reports_write_errors() {
+        let dir = temp_dir("pins_save_error");
+        std::fs::create_dir_all(&dir).unwrap();
+        with_config_home(&dir, || {
+            // a file where the config folder should be makes create_dir_all fail
+            std::fs::write(dir.join("kuterm"), "not a dir").unwrap();
+            Pins::default().save();
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn override_wins_over_the_command_default() {
         let command = command(true);
         let mut pins = Pins::default();

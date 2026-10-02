@@ -27,6 +27,18 @@ pub enum CommandAction {
     /// open a tab with the profile of this name without switching to it
     NewBackgroundTabWithProfile(String),
     CloseTab,
+    /// close every tab to the right of the active one
+    CloseTabsToRight,
+    /// close every tab to the left of the active one
+    CloseTabsToLeft,
+    /// split the focused pane and move its active tab into a new pane on the left
+    SplitLeft,
+    /// split the focused pane and move its active tab into a new pane on the right
+    SplitRight,
+    /// split the focused pane and move its active tab into a new pane above
+    SplitUp,
+    /// split the focused pane and move its active tab into a new pane below
+    SplitDown,
     NextTab,
     PrevTab,
     /// switch to the tab at this 1 based position
@@ -135,6 +147,8 @@ mod tests {
                 "about", "reload_settings", "reload_themes", "reload_keybindings",
                 "reload_all", "new_tab", {"new_tab_with_profile": "dev"},
                 "new_background_tab", {"new_background_tab_with_profile": "dev"}, "close_tab",
+                "close_tabs_to_right", "close_tabs_to_left",
+                "split_left", "split_right", "split_up", "split_down",
                 "next_tab", "prev_tab", {"activate_tab": 2}, "pick_tab", "copy", "paste",
                 {"scroll_up": 10}, {"scroll_down": 3}, "scroll_top", "scroll_bottom",
                 "quit", {"type": "ls\n"}, {"notify": "hi"}, {"notify_when_done": "done"},
@@ -158,6 +172,12 @@ mod tests {
                     CommandAction::NewBackgroundTab,
                     CommandAction::NewBackgroundTabWithProfile("dev".into()),
                     CommandAction::CloseTab,
+                    CommandAction::CloseTabsToRight,
+                    CommandAction::CloseTabsToLeft,
+                    CommandAction::SplitLeft,
+                    CommandAction::SplitRight,
+                    CommandAction::SplitUp,
+                    CommandAction::SplitDown,
                     CommandAction::NextTab,
                     CommandAction::PrevTab,
                     CommandAction::ActivateTab(2),

@@ -1,10 +1,12 @@
-"""close tab dialog: closing a tab with a running program asks first, keys and clicks answer it"""
+"""close dialog: closing a tab or quitting with a running program asks first, keys and clicks answer it"""
 
 import time
 
+import numpy as np
 import pytest
 
-from harness import App, as_rgb, count, ink, mask_bbox, near, unique_theme
+from harness import App, as_rgb, bundled_theme, count, ink, mask_bbox, near, sh, unique_theme, wait_until
+from test_safety import gone
 
 FEATURE = "close tab dialog"
 
@@ -140,8 +142,8 @@ def test_keys_do_not_reach_the_program(app_factory):
     app.snap("typed abc while asked")
     app.key("Escape")
     app.wait(lambda: dialog(app) is None, msg="dialog closed")
-    # the first ctrl-d sends a pending line to cat, the second one ends it
-    app.key("ctrl+d", "ctrl+d")
+    # nothing typed reached cat, so one ctrl-d ends it. a second one would exit bash too
+    app.key("ctrl+d")
     app.wait_title("2 bash")
     assert app.file("typed").read_text() == ""
 
@@ -160,3 +162,161 @@ def test_disabled_warning_closes_at_once(app_factory):
     app.key("ctrl+shift+w")
     app.wait_title("1 bash")
     assert dialog(app) is None
+
+
+def program_pid(program: str) -> int:
+    """pid of the only process running exactly `program`"""
+    out = sh("pgrep", "-xf", program, check=False).split()
+    assert len(out) == 1, f"{program!r} runs {len(out)} times"
+    return int(out[0])
+
+
+def quit_asked(app: App, how: str) -> None:
+    """ask to quit through the palette or the window manager, and wait for the dialog"""
+    if how == "palette":
+        app.palette("app quit")
+    else:
+        app.wm_close()
+    app.wait(lambda: dialog(app), msg="quit dialog")
+
+
+@pytest.mark.parametrize("how", ["palette", "window"])
+def test_quit_asks_with_running_program(app_factory, how):
+    """quitting with the palette or closing the window asks first, escape keeps the app, enter quits"""
+    app = busy_app(app_factory, program="sleep 1001")
+    pid = program_pid("sleep 1001")
+    quit_asked(app, how)
+    app.snap(f"asked before quitting ({how}) with sleep running")
+    app.key("Escape")
+    kept(app)
+    assert app.alive()
+    # the window manager did not unmap the window
+    assert app._find_window() == app.wid
+    quit_asked(app, how)
+    app.key("Return")
+    assert app.exit_code() == 0
+    wait_until(lambda: gone(pid), msg="program ended with the app")
+
+
+@pytest.mark.parametrize("how", ["palette", "window"])
+def test_idle_quit_asks_nothing(app_factory, how):
+    """with only shells in the tabs the app quits at once, ending the shells"""
+    app = app_factory({"theme": {"mode": "dark"}, "window_title": ["number"]}, files={"themes/dark.jsonc": THEME})
+    app.run(f"echo $$ > {app.file('shell')}")
+    shell = int(app.wait_file("shell"))
+    if how == "palette":
+        app.palette("app quit")
+    else:
+        app.wm_close()
+    assert app.exit_code() == 0
+    wait_until(lambda: gone(shell), msg="shell ended")
+
+
+@pytest.mark.parametrize("how", ["palette", "window"])
+def test_disabled_warning_quits_at_once(app_factory, how):
+    """close_running_tab_warn false quits a busy app without asking"""
+    app = busy_app(app_factory, program="sleep 1001", close_running_tab_warn=False)
+    pid = program_pid("sleep 1001")
+    if how == "palette":
+        app.palette("app quit")
+    else:
+        app.wm_close()
+    assert app.exit_code() == 0
+    wait_until(lambda: gone(pid), msg="program ended with the app")
+
+
+def panel(app: App) -> np.ndarray:
+    """the dialog above its buttons, the panel is filled with the tab bar color"""
+    img = app.shot()
+    top = app.bar_height() + 2
+    x0, y0, x1, _ = mask_bbox(near(img[top:], C["tab_bar_background"]))
+    buttons = dialog(app)
+    return img[top + y0 + 2 : buttons[1] - 4, x0 + 2 : x1 - 2]
+
+
+def test_dialog_names_inactive_tab(app_factory):
+    """a middle click on a busy tab that is not active asks about that tab and closes it"""
+    app = app_factory({"theme": {"mode": "dark"}, "window_title": ["number", {"text": " "}, "command"],
+                       "tab_width": 200, "tab_title": [{"text": "tab "}, "number"]},
+                      files={"themes/dark.jsonc": THEME})
+    app.mouse(450, 580)
+    app.key("ctrl+shift+t")
+    app.wait_title("2 bash")
+    app.run("sleep 1001")
+    app.wait_title("2 sleep")
+    pid = program_pid("sleep 1001")
+    app.key("ctrl+shift+t")
+    app.wait_title("3 bash")
+
+    app.click(300, app.bar_height() // 2, button=2)
+    app.wait(lambda: dialog(app), msg="close tab dialog")
+    app.snap('asked about tab 2 "tab 2" while tab 3 is active')
+    asked_inactive = panel(app)
+    app.key("Escape")
+    app.wait(lambda: dialog(app) is None, msg="dialog closed")
+    assert app.title() == "3 bash"
+
+    # the same question asked from the tab itself reads the same, naming tab 2 both times
+    app.key("alt+2")
+    app.wait_title("2 sleep")
+    ask(app)
+    assert np.array_equal(panel(app), asked_inactive)
+    app.key("Escape")
+    app.wait(lambda: dialog(app) is None, msg="dialog closed")
+    app.key("alt+3")
+    app.wait_title("3 bash")
+
+    app.click(300, app.bar_height() // 2, button=2)
+    app.wait(lambda: dialog(app), msg="close tab dialog")
+    app.key("Return")
+    # the active tab moved left into the closed tab's place
+    app.wait_title("2 bash")
+    wait_until(lambda: gone(pid), msg="program of the closed tab ended")
+
+
+def test_modified_keys_do_not_answer(app_factory):
+    """ctrl+y and ctrl+n are not answers, the dialog stays open"""
+    app = busy_app(app_factory)
+    ask(app)
+    app.key("ctrl+y", "ctrl+n", "ctrl+Return", "alt+y")
+    time.sleep(0.5)
+    assert dialog(app) is not None
+    assert app.title() == "2 sleep"
+    app.snap("still asked after ctrl+y and ctrl+n")
+
+
+def test_new_dialog_does_not_stack(app_factory):
+    """the close tab key while asked does not open a second dialog, one escape closes it"""
+    app = busy_app(app_factory)
+    ask(app)
+    app.key("ctrl+shift+w")
+    time.sleep(0.3)
+    app.key("Escape")
+    kept(app)
+
+
+def test_palette_replaces_dialog(app_factory):
+    """the palette key while asked shows the palette instead, and keeps the tab"""
+    app = busy_app(app_factory)
+    ask(app)
+    app.key("ctrl+shift+p")
+    app.wait(lambda: dialog(app) is None, msg="dialog replaced")
+    img = app.shot()[app.bar_height() + 2 :]
+    assert count(img, C["tab_bar_background"]) > 5000, "no palette"
+    app.snap("palette replaced the dialog")
+    app.key("Escape")
+    time.sleep(0.3)
+    assert app.title() == "2 sleep"
+
+
+def test_dialog_light_theme(app_factory):
+    """in the bundled light theme the close button uses its danger color"""
+    light = bundled_theme(False)
+    app = app_factory({"theme": {"mode": "light"}, "window_title": ["number", {"text": " "}, "command"]})
+    app.key("ctrl+shift+t")
+    app.wait_title("2 bash")
+    app.run("sleep 1000")
+    app.wait_title("2 sleep")
+    app.key("ctrl+shift+w")
+    app.wait(lambda: count(app.shot(), light["danger_button"]) > 200, msg="close button in the light danger color")
+    app.snap("close dialog in the light theme")

@@ -2,7 +2,7 @@
 
 import pytest
 
-from harness import App, bundled_theme, close_to, dominant, sh, x_env
+from harness import BACKEND, App, bundled_theme, close_to, dominant, sh, session_env
 
 FEATURE = "window"
 
@@ -20,21 +20,24 @@ def test_initial_size(app_factory):
     assert close_to(dominant(app.shot()), DARK["terminal_background"])
 
 
+@pytest.mark.x11_only
 def test_min_size_hint_is_set(app_factory):
     """the window manager gets a 400x250 minimum size hint"""
     app = dark_app(app_factory)
-    hints = sh("xprop", "-id", app.wid, "WM_NORMAL_HINTS", env=x_env())
+    hints = sh("xprop", "-id", app.wid, "WM_NORMAL_HINTS", env=session_env())
     assert "minimum size: 400 by 250" in hints, hints
 
 
 @pytest.mark.parametrize("w,h", [(399, 600), (900, 249), (1, 1)])
 def test_window_cannot_shrink_below_min_size(app_factory, w, h):
-    """asking for a smaller window stops at the minimum size and still paints everything"""
+    """asking for a smaller window stops at the minimum size and still paints everything.
+    sway's resize command does not apply client minimums, so there only painting is checked"""
     app = dark_app(app_factory)
     app.resize(w, h)
     app.wait(lambda: app.size() != (900, 600), msg="the resize to happen", timeout=5)
     got = app.size()
-    assert got[0] >= 400 and got[1] >= 250, got
+    if BACKEND == "x11":
+        assert got[0] >= 400 and got[1] >= 250, got
     assert app.alive()
     app.wait(lambda: close_to(dominant(app.shot()), DARK["terminal_background"]), msg="painted after resize")
 
@@ -51,6 +54,19 @@ def test_resize_updates_pty(app_factory, w, h):
     img = app.shot()
     # the bottom corner is terminal background, not unpainted black. the right one may hold the scrollbar
     assert close_to(tuple(img[-3, 3]), DARK["terminal_background"])
+
+
+def test_f11_toggles_fullscreen(app_factory):
+    """f11 makes the window fullscreen, a second press restores its size"""
+    app = dark_app(app_factory)
+    before = app.size()
+    app.key("F11")
+    app.wait(app.fullscreen, msg="fullscreen on")
+    app.wait(lambda: app.size() != before, msg="fullscreen geometry")
+    app.snap("fullscreen")
+    app.key("F11")
+    app.wait(lambda: not app.fullscreen(), msg="fullscreen off")
+    app.wait(lambda: app.size() == before, msg="size restored")
 
 
 def test_content_survives_resize(app_factory):

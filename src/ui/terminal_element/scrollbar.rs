@@ -59,49 +59,158 @@ impl ScrollbarLayout {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
-    fn layout(history_size: usize, display_offset: usize) -> ScrollbarLayout {
-        // 100px high track and 10 screen lines
-        let track = Bounds::new(point(px(50.), px(10.)), size(px(8.), px(100.)));
-        ScrollbarLayout::new(track, history_size, 10, display_offset, gpui::black())
+    use gpui::{Bounds, Pixels, point, px, size};
+
+    use super::ScrollbarLayout;
+
+    const TRACK_H: f32 = 200.;
+
+    fn track() -> Bounds<Pixels> {
+        Bounds::new(point(px(300.), px(40.)), size(px(10.), px(TRACK_H)))
+    }
+
+    fn bar(history: usize, lines: usize, offset: usize) -> ScrollbarLayout {
+        ScrollbarLayout::new(track(), history, lines, offset, gpui::black())
+    }
+
+    fn inside(b: &ScrollbarLayout) -> bool {
+        let t = b.track;
+        b.thumb.origin.y >= t.origin.y - px(0.01)
+            && b.thumb.origin.y + b.thumb.size.height <= t.origin.y + t.size.height + px(0.01)
     }
 
     #[test]
-    fn thumb_fills_track_without_history() {
-        let bar = layout(0, 0);
-        assert_eq!(bar.thumb, bar.track);
-        assert_eq!(bar.offset_at(px(60.)), 0);
-    }
-
-    #[test]
-    fn thumb_follows_display_offset() {
-        // 40 history + 10 screen lines, so the thumb is a fifth of the track
-        let bottom = layout(40, 0);
-        assert_eq!(bottom.thumb.size.height, px(20.));
-        assert_eq!(bottom.thumb.origin.y, px(90.));
-        assert_eq!(bottom.thumb.origin.x, px(50.));
-        assert_eq!(layout(40, 40).thumb.origin.y, px(10.));
-        assert_eq!(layout(40, 20).thumb.origin.y, px(50.));
-    }
-
-    #[test]
-    fn thumb_keeps_min_height() {
-        let bar = layout(100_000, 0);
-        assert_eq!(bar.thumb.size.height, px(MIN_THUMB_HEIGHT));
-        assert_eq!(bar.thumb.origin.y, px(90.));
-    }
-
-    #[test]
-    fn offset_at_is_inverse_of_thumb_position() {
-        for offset in [0, 10, 20, 33, 40] {
-            let bar = layout(40, offset);
-            let middle = bar.thumb.origin.y + bar.thumb.size.height / 2.;
-            assert_eq!(bar.offset_at(middle), offset);
+    fn thumb_uses_track_x_and_width() {
+        for (h, o) in [(0, 0), (50, 10), (5000, 4000)] {
+            let b = bar(h, 20, o);
+            assert_eq!(b.thumb.origin.x, b.track.origin.x);
+            assert_eq!(b.thumb.size.width, b.track.size.width);
+            assert_eq!(b.track, track());
         }
-        // past the ends of the track clamps to the top and bottom of history
-        let bar = layout(40, 0);
-        assert_eq!(bar.offset_at(px(-500.)), 40);
-        assert_eq!(bar.offset_at(px(500.)), 0);
+    }
+
+    #[test]
+    fn thumb_stays_inside_track() {
+        for h in [0, 1, 5, 20, 100, 10_000, 1_000_000] {
+            for o in [0, h / 3, h / 2, h] {
+                let b = bar(h, 20, o);
+                assert!(
+                    inside(&b),
+                    "thumb outside for history {h} offset {o}: {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_history_thumb_is_full_track() {
+        let b = bar(0, 30, 0);
+        assert_eq!(b.thumb.size.height, px(TRACK_H));
+    }
+
+    #[test]
+    fn thumb_height_is_proportional_to_visible_part() {
+        // 60 history + 20 screen: a quarter of the track
+        let b = bar(60, 20, 0);
+        assert!((f32::from(b.thumb.size.height) - TRACK_H / 4.).abs() < 0.01);
+    }
+
+    #[test]
+    fn more_history_gives_smaller_or_equal_thumb() {
+        let mut last = f32::MAX;
+        for h in [0, 10, 40, 100, 400, 4000] {
+            let height = f32::from(bar(h, 20, 0).thumb.size.height);
+            assert!(height <= last);
+            last = height;
+        }
+    }
+
+    #[test]
+    fn huge_history_thumb_still_grabbable() {
+        let b = bar(10_000_000, 20, 0);
+        assert!(f32::from(b.thumb.size.height) >= 5.);
+    }
+
+    #[test]
+    fn bottom_offset_puts_thumb_at_bottom_top_at_top() {
+        let b = bar(100, 20, 0);
+        let end = b.thumb.origin.y + b.thumb.size.height;
+        assert!((f32::from(end - (b.track.origin.y + b.track.size.height))).abs() < 0.01);
+        let t = bar(100, 20, 100);
+        assert!((f32::from(t.thumb.origin.y - t.track.origin.y)).abs() < 0.01);
+    }
+
+    #[test]
+    fn larger_offset_moves_thumb_up() {
+        let mut last = f32::MAX;
+        for o in [0, 10, 25, 50, 75, 100] {
+            let y = f32::from(bar(100, 20, o).thumb.origin.y);
+            assert!(y < last, "offset {o} did not move thumb up");
+            last = y;
+        }
+    }
+
+    #[test]
+    fn offset_at_thumb_center_round_trips() {
+        for h in [7, 100, 5000] {
+            for o in [0, 1, h / 2, h - 1, h] {
+                let b = bar(h, 20, o);
+                let mid = b.thumb.origin.y + b.thumb.size.height / 2.;
+                let got = b.offset_at(mid) as i64;
+                // large histories on a 200px track can lose a line or so to rounding
+                let tol = (h as i64 / 150).max(0);
+                assert!(
+                    (got - o as i64).abs() <= tol,
+                    "history {h} offset {o} got {got}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn offset_at_is_clamped_to_history() {
+        let b = bar(100, 20, 50);
+        assert_eq!(b.offset_at(px(-10_000.)), 100);
+        assert_eq!(b.offset_at(px(10_000.)), 0);
+        assert_eq!(b.offset_at(b.track.origin.y), 100);
+        assert_eq!(b.offset_at(b.track.origin.y + b.track.size.height), 0);
+    }
+
+    #[test]
+    fn offset_at_decreases_going_down() {
+        let b = bar(100, 20, 0);
+        let mut last = usize::MAX;
+        let mut y = f32::from(b.track.origin.y);
+        while y <= f32::from(b.track.origin.y) + TRACK_H {
+            let o = b.offset_at(px(y));
+            assert!(o <= last);
+            last = o;
+            y += 5.;
+        }
+    }
+
+    #[test]
+    fn offset_at_without_history_is_zero() {
+        let b = bar(0, 20, 0);
+        for y in [-50., 40., 140., 240., 900.] {
+            assert_eq!(b.offset_at(px(y)), 0);
+        }
+    }
+
+    #[test]
+    fn tiny_track_does_not_panic_or_escape() {
+        let t = Bounds::new(point(px(0.), px(0.)), size(px(8.), px(5.)));
+        let b = ScrollbarLayout::new(t, 1000, 2, 500, gpui::black());
+        assert!(b.thumb.size.height <= px(5.));
+        assert!(b.thumb.origin.y >= px(0.));
+        let _ = b.offset_at(px(3.));
+    }
+
+    #[test]
+    fn zero_screen_lines_does_not_panic() {
+        let b = bar(10, 0, 5);
+        assert!(inside(&b));
+        let _ = b.offset_at(px(100.));
     }
 }

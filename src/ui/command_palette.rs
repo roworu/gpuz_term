@@ -439,15 +439,33 @@ impl Render for About {
     }
 }
 
-/// emitted when closing the tab is confirmed
+/// emitted when closing the tab or quitting is confirmed
 pub struct CloseConfirmed;
 
-/// asks before closing a tab with a program still running in it
+/// what the close dialog asks about
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum CloseTarget {
+    /// these tabs, closed together, like the tabs on one side of the active one
+    Tabs(Vec<EntityId>),
+    /// the whole window, quitting the app
+    Window,
+}
+
+impl CloseTarget {
+    /// true when closing the tab with this view is part of what is asked
+    pub fn contains(&self, id: EntityId) -> bool {
+        match self {
+            Self::Tabs(tabs) => tabs.contains(&id),
+            Self::Window => false,
+        }
+    }
+}
+
+/// asks before closing a tab or quitting while programs still run
 pub struct ConfirmClose {
     focus_handle: FocusHandle,
-    program: String,
-    /// view of the tab asked about
-    pub tab: EntityId,
+    message: String,
+    pub target: CloseTarget,
     /// true while "close" is the button enter presses, false for "cancel"
     close_selected: bool,
 }
@@ -456,22 +474,35 @@ impl EventEmitter<DismissEvent> for ConfirmClose {}
 impl EventEmitter<CloseConfirmed> for ConfirmClose {}
 
 impl ConfirmClose {
-    /// dialog naming the `program` running in `tab`, ready to be focused
-    pub fn new(program: String, tab: EntityId, cx: &mut Context<Self>) -> Self {
+    /// dialog showing `message` about `target`, ready to be focused
+    pub fn new(message: String, target: CloseTarget, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
-            program,
-            tab,
+            message,
+            target,
             close_selected: true,
         }
     }
 
+    /// shown question, exposed for tests
+    #[cfg(test)]
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let modifiers = &event.keystroke.modifiers;
+        // answers need a bare key, so a shell shortcut like ctrl+y typed by habit answers nothing.
+        // shift is still allowed on the letters
+        let plain = !modifiers.modified();
+        let letter =
+            !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.function);
         match event.keystroke.key.as_str() {
-            "enter" if self.close_selected => cx.emit(CloseConfirmed),
-            "enter" => cx.emit(DismissEvent),
-            "y" => cx.emit(CloseConfirmed),
-            "escape" | "n" => cx.emit(DismissEvent),
+            "enter" if plain && self.close_selected => cx.emit(CloseConfirmed),
+            "enter" if plain => cx.emit(DismissEvent),
+            "y" if letter => cx.emit(CloseConfirmed),
+            "n" if letter => cx.emit(DismissEvent),
+            "escape" if plain => cx.emit(DismissEvent),
             // "cancel" sits left of "close"
             "left" | "up" => self.close_selected = false,
             "right" | "down" => self.close_selected = true,
@@ -514,11 +545,14 @@ impl Render for ConfirmClose {
             .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
             .p_4()
             .gap_2()
-            .child(format!("\"{}\" is still running in this tab", self.program))
+            .child(self.message.clone())
             .child(
                 div()
                     .text_color(theme.text_muted)
-                    .child("close it anyway? arrows pick a button, escape cancels"),
+                    .child(match &self.target {
+                        CloseTarget::Tabs(_) => "close anyway?",
+                        CloseTarget::Window => "quit anyway?",
+                    }),
             )
             .child(
                 div()
@@ -534,11 +568,18 @@ impl Render for ConfirmClose {
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
                     )
                     .child(
-                        button("confirm-close-ok", "close", self.close_selected)
-                            .bg(theme.danger_button)
-                            .text_color(theme.danger_button_text)
-                            .hover(|button| button.opacity(0.85))
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseConfirmed))),
+                        button(
+                            "confirm-close-ok",
+                            match &self.target {
+                                CloseTarget::Tabs(_) => "close",
+                                CloseTarget::Window => "quit",
+                            },
+                            self.close_selected,
+                        )
+                        .bg(theme.danger_button)
+                        .text_color(theme.danger_button_text)
+                        .hover(|button| button.opacity(0.85))
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseConfirmed))),
                     ),
             )
     }

@@ -73,7 +73,10 @@ def test_programs_cannot_read_the_clipboard(app_factory, report_note):
 def test_programs_can_copy_to_the_clipboard(app_factory):
     """an osc 52 clipboard write is allowed, like ssh sessions copying text"""
     data = base64.b64encode(b"copied by a program").decode()
-    app_factory({"theme": {"mode": "dark"}}, script=f"printf '\\033]52;c;{data}\\007'")
+    app = app_factory({"theme": {"mode": "dark"}}, script=f"step 1; printf '\\033]52;c;{data}\\007'")
+    # wayland only lets a window take the clipboard after some input, like a user would give
+    app.click(450, 300)
+    app.step(1)
     time.sleep(0.5)
     deadline = time.monotonic() + 10
     while get_clipboard() != "copied by a program" and time.monotonic() < deadline:

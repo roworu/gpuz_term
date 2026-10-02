@@ -125,112 +125,281 @@ fn absolute(path: OsString) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::DEFAULT_SETTINGS;
     use crate::settings::tests::{temp_dir, with_config_home};
+
+    const PATH_OPTIONS: [&str; 5] = [
+        "--config-file",
+        "--keybindings-file",
+        "--tab-icons-file",
+        "--dark-theme-file",
+        "--light-theme-file",
+    ];
 
     fn parse(args: &[&str]) -> Result<Cli, String> {
         Cli::parse(args.iter().map(OsString::from))
     }
 
+    fn path_field(cli: &Cli, option: &str) -> Option<PathBuf> {
+        match option {
+            "--config-file" => cli.config_file.clone(),
+            "--keybindings-file" => cli.keybindings_file.clone(),
+            "--tab-icons-file" => cli.tab_icons_file.clone(),
+            "--dark-theme-file" => cli.dark_theme_file.clone(),
+            "--light-theme-file" => cli.light_theme_file.clone(),
+            _ => unreachable!(),
+        }
+    }
+
     #[test]
-    fn parses_options() {
+    fn no_args_give_defaults() {
         assert_eq!(parse(&[]).unwrap(), Cli::default());
+    }
+
+    #[test]
+    fn short_and_long_help() {
+        assert!(parse(&["-h"]).unwrap().help);
+        assert!(parse(&["--help"]).unwrap().help);
+        assert!(!parse(&[]).unwrap().help);
+    }
+
+    #[test]
+    fn recreate_confs_flag_takes_no_value() {
+        let cli = parse(&["--recreate-confs", "--theme-mode", "dark"]).unwrap();
+        assert!(cli.recreate_confs);
+        assert_eq!(cli.theme_mode, Some(ThemeMode::Dark));
+    }
+
+    #[test]
+    fn each_path_option_keeps_absolute_path() {
+        for option in PATH_OPTIONS {
+            let cli = parse(&[option, "/abs/dir/file.jsonc"]).unwrap();
+            assert_eq!(
+                path_field(&cli, option),
+                Some(PathBuf::from("/abs/dir/file.jsonc")),
+                "{option}"
+            );
+            // other path options stay unset
+            for other in PATH_OPTIONS.iter().filter(|o| **o != option) {
+                assert_eq!(path_field(&cli, other), None, "{option} set {other}");
+            }
+        }
+    }
+
+    #[test]
+    fn each_path_option_makes_relative_path_absolute_from_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        for option in PATH_OPTIONS {
+            let cli = parse(&[option, "sub/file.jsonc"]).unwrap();
+            let path = path_field(&cli, option).unwrap();
+            assert!(path.is_absolute(), "{option}: {path:?}");
+            assert_eq!(path, cwd.join("sub/file.jsonc"), "{option}");
+        }
+    }
+
+    #[test]
+    fn theme_mode_values() {
+        for (value, mode) in [
+            ("system", ThemeMode::System),
+            ("dark", ThemeMode::Dark),
+            ("light", ThemeMode::Light),
+        ] {
+            assert_eq!(
+                parse(&["--theme-mode", value]).unwrap().theme_mode,
+                Some(mode)
+            );
+        }
+    }
+
+    #[test]
+    fn theme_mode_rejects_unknown_value() {
+        assert!(parse(&["--theme-mode", "blue"]).is_err());
+        assert!(parse(&["--theme-mode", ""]).is_err());
+    }
+
+    #[test]
+    fn missing_value_is_error() {
+        for option in PATH_OPTIONS.iter().chain(&["--theme-mode"]) {
+            let err = parse(&[option]).unwrap_err();
+            assert!(err.contains(option), "{option}: {err}");
+        }
+        // missing value after other valid options too
+        assert!(parse(&["--recreate-confs", "--config-file"]).is_err());
+    }
+
+    #[test]
+    fn unknown_option_is_error() {
+        let err = parse(&["--nope"]).unwrap_err();
+        assert!(err.contains("--nope"), "{err}");
+        assert!(parse(&["positional"]).is_err());
+        assert!(parse(&["-x"]).is_err());
+        assert!(parse(&["--help", "--nope"]).is_err());
+    }
+
+    #[test]
+    fn usage_lists_every_option() {
+        for option in
+            PATH_OPTIONS
+                .iter()
+                .chain(&["--recreate-confs", "--theme-mode", "-h", "--help"])
+        {
+            assert!(USAGE.contains(option), "usage misses {option}");
+        }
+    }
+
+    #[test]
+    fn all_options_together() {
         let cli = parse(&[
-            "--recreate-confs",
-            "--config-file",
-            "/a/s.jsonc",
-            "--keybindings-file",
-            "/a/k.jsonc",
-            "--tab-icons-file",
-            "/a/t.jsonc",
-            "--dark-theme-file",
-            "/a/d.jsonc",
-            "--light-theme-file",
-            "/a/l.jsonc",
             "--theme-mode",
-            "light",
+            "system",
+            "--recreate-confs",
+            "--light-theme-file",
+            "/l.jsonc",
+            "--config-file",
+            "/s.jsonc",
         ])
         .unwrap();
-        assert_eq!(
-            cli,
-            Cli {
-                help: false,
-                recreate_confs: true,
-                config_file: Some("/a/s.jsonc".into()),
-                keybindings_file: Some("/a/k.jsonc".into()),
-                tab_icons_file: Some("/a/t.jsonc".into()),
-                dark_theme_file: Some("/a/d.jsonc".into()),
-                light_theme_file: Some("/a/l.jsonc".into()),
-                theme_mode: Some(ThemeMode::Light),
-            }
-        );
-        assert!(parse(&["--help"]).unwrap().help);
+        assert!(cli.recreate_confs);
+        assert!(!cli.help);
+        assert_eq!(cli.theme_mode, Some(ThemeMode::System));
+        assert_eq!(cli.light_theme_file, Some("/l.jsonc".into()));
+        assert_eq!(cli.config_file, Some("/s.jsonc".into()));
+        assert_eq!(cli.dark_theme_file, None);
     }
 
     #[test]
-    fn relative_paths_start_from_current_folder() {
-        let cli = parse(&["--dark-theme-file", "d.jsonc"]).unwrap();
-        let expected = std::env::current_dir().unwrap().join("d.jsonc");
-        assert_eq!(cli.dark_theme_file, Some(expected));
-    }
-
-    #[test]
-    fn rejects_bad_options() {
-        assert!(parse(&["--unknown"]).is_err());
-        assert!(parse(&["--config-file"]).is_err());
-        assert!(parse(&["--theme-mode", "blue"]).is_err());
-    }
-
-    #[test]
-    fn apply_overrides_theme_settings() {
-        let cli = parse(&["--theme-mode", "dark", "--light-theme-file", "/l.jsonc"]).unwrap();
-        let mut settings = Settings::default();
-        cli.apply(&mut settings);
-        let defaults = Settings::default();
-        assert_eq!(settings.theme.mode, ThemeMode::Dark);
-        assert_eq!(settings.theme.dark, defaults.theme.dark);
-        assert_eq!(settings.theme.light, Some("/l.jsonc".into()));
-
+    fn apply_without_overrides_keeps_settings() {
         let mut settings = Settings::default();
         Cli::default().apply(&mut settings);
-        assert_eq!(settings, defaults);
+        assert_eq!(settings, Settings::default());
     }
 
     #[test]
-    fn remove_configs_lets_load_write_defaults() {
-        let dir = temp_dir("cli_remove_configs");
-        let custom_theme = dir.join("custom_dark.jsonc");
+    fn apply_overrides_mode_and_both_theme_files() {
+        let cli = parse(&[
+            "--theme-mode",
+            "light",
+            "--dark-theme-file",
+            "/d.jsonc",
+            "--light-theme-file",
+            "/l.jsonc",
+        ])
+        .unwrap();
+        let mut settings = Settings::default();
+        cli.apply(&mut settings);
+        assert_eq!(settings.theme.mode, ThemeMode::Light);
+        assert_eq!(settings.theme.dark, Some("/d.jsonc".into()));
+        assert_eq!(settings.theme.light, Some("/l.jsonc".into()));
+        // only theme is touched
+        let expected = Settings {
+            theme: settings.theme.clone(),
+            ..Settings::default()
+        };
+        assert_eq!(settings, expected);
+    }
+
+    #[test]
+    fn init_stores_the_first_options() {
+        let cli = Cli {
+            recreate_confs: true,
+            ..Cli::default()
+        };
+        cli.clone().init();
+        assert_eq!(Cli::get(), &cli);
+        // only the first call wins
+        Cli::default().init();
+        assert_eq!(Cli::get(), &cli);
+    }
+
+    #[test]
+    fn recreate_removes_default_config_and_theme_files() {
+        let dir = temp_dir("cli_recreate_defaults");
+        with_config_home(&dir, || {
+            let defaults = Settings::default();
+            let themes: Vec<PathBuf> = [defaults.theme.dark.clone(), defaults.theme.light.clone()]
+                .into_iter()
+                .flatten()
+                .map(|p| Theme::resolve(&p))
+                .collect();
+            let files: Vec<PathBuf> = [Settings::path(), Keybindings::path(), TabIcons::path()]
+                .into_iter()
+                .map(Option::unwrap)
+                .chain(themes)
+                .collect();
+            for file in &files {
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(file, "broken").unwrap();
+            }
+            let keep = dir.join("kuterm").join("keep.txt");
+            std::fs::write(&keep, "keep").unwrap();
+
+            parse(&["--recreate-confs"]).unwrap().remove_configs();
+            for file in &files {
+                assert!(!file.exists(), "{file:?} not removed");
+            }
+            assert!(keep.exists());
+
+            // loading writes defaults again
+            assert_eq!(Settings::load(), Settings::default());
+            assert_eq!(Keybindings::load(), Keybindings::default());
+            assert_eq!(TabIcons::load(), TabIcons::default());
+            assert!(Settings::path().unwrap().exists());
+            assert!(Keybindings::path().unwrap().exists());
+            assert!(TabIcons::path().unwrap().exists());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recreate_uses_cli_theme_overrides_not_defaults() {
+        let dir = temp_dir("cli_recreate_overrides");
+        with_config_home(&dir, || {
+            let custom_light = dir.join("elsewhere").join("light.jsonc");
+            std::fs::create_dir_all(custom_light.parent().unwrap()).unwrap();
+            std::fs::write(&custom_light, "x").unwrap();
+            let default_light = Settings::default().theme.light.map(|p| Theme::resolve(&p));
+            if let Some(path) = &default_light {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, "x").unwrap();
+            }
+
+            let arg = custom_light.to_string_lossy().into_owned();
+            parse(&["--light-theme-file", &arg])
+                .unwrap()
+                .remove_configs();
+            assert!(!custom_light.exists());
+            // default light theme is not the one in use, so it stays
+            if let Some(path) = &default_light
+                && *path != custom_light
+            {
+                assert!(path.exists(), "{path:?} removed though overridden");
+            }
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recreate_with_nothing_to_remove_is_fine() {
+        let dir = temp_dir("cli_recreate_empty");
+        with_config_home(&dir, || {
+            Cli::default().remove_configs();
+            parse(&["--recreate-confs"]).unwrap().remove_configs();
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_configs_reports_unremovable_files() {
+        let dir = temp_dir("cli_remove_error");
         with_config_home(&dir, || {
             let settings = Settings::path().unwrap();
-            let keybindings = Keybindings::path().unwrap();
-            std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
-            std::fs::write(&settings, "broken").unwrap();
-            std::fs::write(&keybindings, "broken").unwrap();
-            std::fs::write(&custom_theme, "broken").unwrap();
-            let unrelated = settings.with_file_name("notes.txt");
-            std::fs::write(&unrelated, "keep").unwrap();
-
-            let cli = Cli {
+            // a directory can't be removed as a file, so the error path runs
+            std::fs::create_dir_all(&settings).unwrap();
+            Cli {
                 recreate_confs: true,
-                dark_theme_file: Some(custom_theme.clone()),
                 ..Cli::default()
-            };
-            cli.remove_configs();
-            assert!(!settings.exists());
-            assert!(!keybindings.exists());
-            assert!(!custom_theme.exists());
-            assert!(unrelated.exists());
-
-            assert_eq!(Settings::load(), Settings::default());
-            assert_eq!(
-                std::fs::read_to_string(&settings).unwrap(),
-                DEFAULT_SETTINGS
-            );
-            assert_eq!(Keybindings::load(), Keybindings::default());
-            assert!(keybindings.exists());
-
-            // nothing to remove is fine
-            cli.remove_configs();
+            }
+            .remove_configs();
+            assert!(settings.is_dir());
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
