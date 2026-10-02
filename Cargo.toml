@@ -1,6 +1,6 @@
 [package]
 name = "kuterm"
-version = "0.0.5"
+version = "0.0.6"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "highly configurable, gpu accelerated terminal"
@@ -24,8 +24,8 @@ assets = [
 ]
 
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "017f9b89aa26bfcb015b3f05c3f2dff64704338d" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "017f9b89aa26bfcb015b3f05c3f2dff64704338d", features = ["wayland", "x11", "font-kit"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "cd8c4674188613e32c219ace84a5cd62f5d8f708" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "cd8c4674188613e32c219ace84a5cd62f5d8f708", features = ["wayland", "x11", "font-kit"] }
 alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "4c129667ce56611becdc82de6e28218c80e2e88f" }
 anyhow = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -35,7 +35,7 @@ serde_json_lenient = "0.2"
 skrifa = "0.47"
 
 [dev-dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "017f9b89aa26bfcb015b3f05c3f2dff64704338d", features = ["test-support"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "cd8c4674188613e32c219ace84a5cd62f5d8f708", features = ["test-support"] }
 
 [profile.dev.package."*"]
 opt-level = 2
